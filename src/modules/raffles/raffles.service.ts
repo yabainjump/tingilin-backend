@@ -1,0 +1,129 @@
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
+import { ProductsService } from '../products/products.service';
+import { CreateRaffleDto } from './dto/create-raffle.dto';
+import { UpdateRaffleDto } from './dto/update-raffle.dto';
+import { Raffle, RaffleDocument } from './schemas/raffle.schema';
+
+@Injectable()
+export class RafflesService {
+  constructor(
+    @InjectModel(Raffle.name)
+    private readonly raffleModel: Model<RaffleDocument>,
+    private readonly productsService: ProductsService,
+  ) {}
+
+  // Public
+  async listPublic() {
+    return this.raffleModel
+      .find({ status: { $in: ['LIVE', 'CLOSED', 'DRAWN'] } })
+      .sort({ createdAt: -1 })
+      .exec();
+  }
+
+  async getPublicById(id: string) {
+    const r = await this.raffleModel
+      .findOne({ _id: id, status: { $in: ['LIVE', 'CLOSED', 'DRAWN'] } })
+      .exec();
+    if (!r) throw new NotFoundException('Raffle not found');
+    return r;
+  }
+
+  async getStats(id: string) {
+    const r = await this.getPublicById(id);
+    const now = Date.now();
+    const end = new Date(r.endAt).getTime();
+    const remainingMs = Math.max(0, end - now);
+
+    return {
+      raffleId: r._id.toString(),
+      status: r.status,
+      ticketsSold: r.ticketsSold,
+      participantsCount: r.participantsCount,
+      endAt: r.endAt,
+      remainingMs,
+    };
+  }
+
+  // Admin
+  async adminCreate(dto: CreateRaffleDto, createdBy: string) {
+    // Vérifier que le produit existe (adminGetById accepte tout status)
+    await this.productsService.adminGetById(dto.productId);
+
+    const startAt = new Date(dto.startAt);
+    const endAt = new Date(dto.endAt);
+    if (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime())) {
+      throw new BadRequestException('Invalid dates');
+    }
+    if (endAt <= startAt)
+      throw new BadRequestException('endAt must be after startAt');
+
+    return this.raffleModel.create({
+      productId: new Types.ObjectId(dto.productId),
+      ticketPrice: dto.ticketPrice,
+      currency: dto.currency ?? 'XAF',
+      startAt,
+      endAt,
+      rules: dto.rules ?? '',
+      status: 'DRAFT',
+      createdBy: new Types.ObjectId(createdBy),
+    });
+  }
+
+  async adminUpdate(id: string, dto: UpdateRaffleDto) {
+    if (dto.startAt && dto.endAt) {
+      const s = new Date(dto.startAt);
+      const e = new Date(dto.endAt);
+      if (e <= s) throw new BadRequestException('endAt must be after startAt');
+    }
+    const updated = await this.raffleModel
+      .findByIdAndUpdate(
+        id,
+        {
+          ...dto,
+          ...(dto.startAt ? { startAt: new Date(dto.startAt) } : {}),
+          ...(dto.endAt ? { endAt: new Date(dto.endAt) } : {}),
+        },
+        { new: true },
+      )
+      .exec();
+
+    if (!updated) throw new NotFoundException('Raffle not found');
+    return updated;
+  }
+
+  async adminStart(id: string) {
+    const r = await this.raffleModel.findById(id).exec();
+    if (!r) throw new NotFoundException('Raffle not found');
+    if (r.status !== 'DRAFT')
+      throw new BadRequestException('Only DRAFT can be started');
+
+    r.status = 'LIVE';
+    return r.save();
+  }
+
+  async adminClose(id: string) {
+    const r = await this.raffleModel.findById(id).exec();
+    if (!r) throw new NotFoundException('Raffle not found');
+    if (r.status !== 'LIVE')
+      throw new BadRequestException('Only LIVE can be closed');
+
+    r.status = 'CLOSED';
+    return r.save();
+  }
+
+  async adminListAll() {
+    return this.raffleModel.find().sort({ createdAt: -1 }).exec();
+  }
+
+  async adminGetById(id: string) {
+    const r = await this.raffleModel.findById(id).exec();
+    if (!r) throw new NotFoundException('Raffle not found');
+    return r;
+  }
+}
