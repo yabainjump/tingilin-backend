@@ -7,6 +7,9 @@ import { UsersModule } from './modules/users/users.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ProductsModule } from './modules/products/products.module';
 import { RafflesModule } from './modules/raffles/raffles.module';
+import { TicketsModule } from './modules/tickets/tickets.module';
+import { PaymentsModule } from './modules/payments/payments.module';
+import { ParticipationsModule } from './modules/participations/participations.module';
 
 @Module({
   imports: [
@@ -16,6 +19,9 @@ import { RafflesModule } from './modules/raffles/raffles.module';
     AuthModule,
     ProductsModule,
     RafflesModule,
+    TicketsModule,
+    PaymentsModule,
+    ParticipationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

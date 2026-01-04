@@ -36,6 +36,15 @@ export class Raffle {
 
   @Prop({ type: Types.ObjectId, required: true })
   createdBy: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId })
+  winnerUserId?: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId })
+  winnerTicketId?: Types.ObjectId;
+
+  @Prop({ type: Date })
+  drawnAt?: Date;
 }
 
 export const RaffleSchema = SchemaFactory.createForClass(Raffle);

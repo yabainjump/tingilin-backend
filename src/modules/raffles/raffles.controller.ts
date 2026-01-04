@@ -10,6 +10,18 @@ export class RafflesController {
     return this.rafflesService.listPublic();
   }
 
+  @Get(':id/winner')
+  async winner(@Param('id') id: string) {
+    const r = await this.rafflesService.getPublicById(id);
+    return {
+      raffleId: r._id.toString(),
+      status: r.status,
+      winnerUserId: r.winnerUserId?.toString() ?? null,
+      winnerTicketId: r.winnerTicketId?.toString() ?? null,
+      drawnAt: r.drawnAt ?? null,
+    };
+  }
+
   @Get(':id')
   get(@Param('id') id: string) {
     return this.rafflesService.getPublicById(id);
