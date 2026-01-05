@@ -1,8 +1,11 @@
 import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+// import { Throttle } from '@nestjs/throttler';
 import { CreateIntentDto } from './dto/create-intent.dto';
 import { MockConfirmDto } from './dto/mock-confirm.dto';
 import { PaymentsService } from './payments.service';
+
+import { MockFailDto } from './dto/mock-fail.dto';
 
 @UseGuards(AuthGuard('jwt'))
 @Controller('payments')
@@ -14,9 +17,13 @@ export class PaymentsController {
     return this.paymentsService.createIntent(req.user.sub, dto);
   }
 
-  // DEV only
   @Post('mock/confirm')
   mockConfirm(@Req() req: any, @Body() dto: MockConfirmDto) {
     return this.paymentsService.mockConfirm(req.user.sub, dto);
+  }
+
+  @Post('mock/fail')
+  mockFail(@Req() req: any, @Body() dto: MockFailDto) {
+    return this.paymentsService.mockFail(req.user.sub, dto);
   }
 }

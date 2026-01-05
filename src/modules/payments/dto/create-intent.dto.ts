@@ -12,8 +12,8 @@ export class CreateIntentDto {
   raffleId: string;
 
   @IsInt()
-  @Min(1)
-  quantity: number;
+  @Min(100)
+  amount: number;
 
   @IsOptional()
   @IsString()

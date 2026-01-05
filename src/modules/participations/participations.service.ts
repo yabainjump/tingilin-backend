@@ -39,4 +39,25 @@ export class ParticipationsService {
       : !!(res as any).upsertedId;
     return { wasCreated };
   }
+
+  async getOrCreate(raffleId: string, userId: string) {
+    const raffleObj = new Types.ObjectId(raffleId);
+    const userObj = new Types.ObjectId(userId);
+
+    const doc = await this.model
+      .findOneAndUpdate(
+        { raffleId: raffleObj, userId: userObj },
+        {
+          $setOnInsert: {
+            firstPurchaseAt: new Date(),
+            totalTicketsBought: 0,
+            failedAttempts: 0,
+          },
+        },
+        { upsert: true, new: true },
+      )
+      .exec();
+
+    return doc;
+  }
 }

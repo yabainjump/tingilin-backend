@@ -24,8 +24,14 @@ export class Transaction {
   @Prop({ type: String, default: 'MOCK' })
   provider: string;
 
-  @Prop({ type: String, default: '' })
+  @Prop({ type: String, required: false, default: undefined })
   providerRef: string;
+
+  @Prop({ type: String, required: false })
+  failReason?: string;
+
+  @Prop({ type: Date, required: false })
+  failedAt?: Date;
 
   @Prop({ type: String, default: 'PENDING' })
   status: TxStatus;
@@ -37,5 +43,8 @@ export class Transaction {
 export const TransactionSchema = SchemaFactory.createForClass(Transaction);
 TransactionSchema.index(
   { provider: 1, providerRef: 1 },
-  { unique: true, sparse: true },
+  {
+    unique: true,
+    partialFilterExpression: { providerRef: { $type: 'string', $ne: '' } },
+  },
 );

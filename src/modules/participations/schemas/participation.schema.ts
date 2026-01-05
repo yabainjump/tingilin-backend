@@ -16,6 +16,12 @@ export class Participation {
 
   @Prop({ type: Number, default: 0 })
   totalTicketsBought: number;
+
+  @Prop({ type: Number, default: 0 })
+  failedAttempts: number;
+
+  @Prop({ type: Date })
+  blockedUntil?: Date;
 }
 
 export const ParticipationSchema = SchemaFactory.createForClass(Participation);

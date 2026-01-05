@@ -1,12 +1,9 @@
 import { IsMongoId, IsString } from 'class-validator';
 
-export class MockConfirmDto {
+export class MockFailDto {
   @IsMongoId()
   transactionId: string;
 
-  // @IsString()
-  // reason: string;
-
   @IsString()
-  providerRef: string;
+  reason: string;
 }
