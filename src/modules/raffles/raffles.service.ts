@@ -29,13 +29,32 @@ export class RafflesService {
       .exec();
   }
 
+  // async getPublicById(id: string) {
+  //   const r = await this.raffleModel
+  //     .findOne({ _id: id, status: { $in: ['LIVE', 'CLOSED', 'DRAWN'] } })
+  //     .exec();
+  //   if (!r) throw new NotFoundException('Raffle not found');
+  //   return r;
+  // }
+
   async getPublicById(id: string) {
-    const r = await this.raffleModel
-      .findOne({ _id: id, status: { $in: ['LIVE', 'CLOSED', 'DRAWN'] } })
-      .exec();
-    if (!r) throw new NotFoundException('Raffle not found');
-    return r;
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Invalid id');
+    }
+
+    try {
+      const r = await this.raffleModel.findById(id).lean().exec();
+      if (!r) throw new NotFoundException('Raffle not found');
+      return r;
+    } catch (e: any) {
+      // sécurité anti CastError (au cas où)
+      if (e?.name === 'CastError') {
+        throw new BadRequestException('Invalid id');
+      }
+      throw e;
+    }
   }
+
 
   async getStats(id: string) {
     const r = await this.getPublicById(id);

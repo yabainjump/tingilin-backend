@@ -200,9 +200,19 @@ export class PaymentsService {
         idempotent: true,
       };
     }
+
+    const partReset = await this.participationsService.getOrCreate(
+      tx.raffleId.toString(),
+      userId,
+    );
+    partReset.failedAttempts = 0;
+    partReset.blockedUntil = undefined;
+    await partReset.save();
+
     const parts = await this.participationsService.getOrCreate(
       tx.raffleId.toString(),
       userId,
+      //test
     );
     parts.failedAttempts = 0;
     parts.blockedUntil = undefined;
@@ -287,26 +297,52 @@ export class PaymentsService {
   //   if (!tx) throw new NotFoundException('Transaction not found');
   //   if (tx.userId.toString() !== userId)
   //     throw new BadRequestException('Not your transaction');
-  //   if (tx.status !== 'PENDING')
-  //     throw new BadRequestException('Transaction not pending');
+
+  //   if (tx.status === 'SUCCESS') {
+  //     // idempotent : on ne "fail" pas une transaction réussie
+  //     return {
+  //       ok: true,
+  //       transactionId: tx._id.toString(),
+  //       status: tx.status,
+  //       idempotent: true,
+  //     };
+  //   }
+  //   if (tx.status !== 'PENDING') {
+  //     return {
+  //       ok: true,
+  //       transactionId: tx._id.toString(),
+  //       status: tx.status,
+  //       idempotent: true,
+  //     };
+  //   }
 
   //   tx.status = 'FAILED';
+  //   tx.failReason = dto.reason; // si ce champ existe dans ton schema
+  //   tx.failedAt = new Date(); // idem
   //   await tx.save();
 
-  //   // incr failed attempts
   //   const part = await this.participationsService.getOrCreate(
   //     tx.raffleId.toString(),
   //     userId,
   //   );
-  //   part.failedAttempts = (part.failedAttempts ?? 0) + 1;
 
-  //   if (part.failedAttempts >= 3) {
-  //     part.blockedUntil = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+  //   const currentFails =
+  //     typeof part.failedAttempts === 'number' ? part.failedAttempts : 0;
+  //   part.failedAttempts = currentFails + 1;
+
+  //   // blocage après 3 échecs
+  //   const MAX_FAILS = 3;
+  //   const BLOCK_MINUTES = 10;
+
+  //   if (part.failedAttempts >= MAX_FAILS) {
+  //     part.blockedUntil = new Date(Date.now() + BLOCK_MINUTES * 60 * 1000);
   //   }
+
   //   await part.save();
 
   //   return {
   //     ok: true,
+  //     transactionId: tx._id.toString(),
   //     status: tx.status,
   //     failedAttempts: part.failedAttempts,
   //     blockedUntil: part.blockedUntil ?? null,
@@ -319,8 +355,23 @@ export class PaymentsService {
     if (tx.userId.toString() !== userId)
       throw new BadRequestException('Not your transaction');
 
-    if (tx.status === 'SUCCESS') {
-      // idempotent : on ne "fail" pas une transaction réussie
+    const part = await this.participationsService.getOrCreate(
+      tx.raffleId.toString(),
+      userId,
+    );
+
+    // si déjà bloqué, on refuse immédiatement (niveau 2)
+    if (
+      part.blockedUntil instanceof Date &&
+      part.blockedUntil.getTime() > Date.now()
+    ) {
+      throw new BadRequestException(
+        `Temporarily blocked due to failed payments until ${part.blockedUntil.toISOString()}`,
+      );
+    }
+
+    // idempotence: si déjà terminal, ne pas ré-incrémenter
+    if (tx.status === 'SUCCESS' || tx.status === 'FAILED') {
       return {
         ok: true,
         transactionId: tx._id.toString(),
@@ -328,6 +379,7 @@ export class PaymentsService {
         idempotent: true,
       };
     }
+
     if (tx.status !== 'PENDING') {
       return {
         ok: true,
@@ -338,20 +390,14 @@ export class PaymentsService {
     }
 
     tx.status = 'FAILED';
-    tx.failReason = dto.reason; // si ce champ existe dans ton schema
-    tx.failedAt = new Date(); // idem
+    tx.failReason = dto.reason;
+    tx.failedAt = new Date();
     await tx.save();
-
-    const part = await this.participationsService.getOrCreate(
-      tx.raffleId.toString(),
-      userId,
-    );
 
     const currentFails =
       typeof part.failedAttempts === 'number' ? part.failedAttempts : 0;
     part.failedAttempts = currentFails + 1;
 
-    // blocage après 3 échecs
     const MAX_FAILS = 3;
     const BLOCK_MINUTES = 10;
 

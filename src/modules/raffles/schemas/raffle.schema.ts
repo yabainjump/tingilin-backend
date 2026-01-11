@@ -48,3 +48,4 @@ export class Raffle {
 }
 
 export const RaffleSchema = SchemaFactory.createForClass(Raffle);
+RaffleSchema.index({ status: 1, endAt: 1 });
