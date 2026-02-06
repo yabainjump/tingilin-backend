@@ -20,6 +20,19 @@ export class User {
   @Prop({ type: String, default: 'ACTIVE' })
   status: UserStatus;
 
+  @Prop({ required: true })
+  firstName!: string;
+
+  @Prop({ required: true })
+  lastName!: string;
+
+  @Prop({ required: true, unique: true, index: true })
+  phone!: string;
+
+  // photo par défaut demandée dans le doc
+  @Prop({ default: 'defpic.jpg' })
+  avatar!: string;
+
   @Prop({ type: Object, default: {} })
   profile: Record<string, any>;
 }

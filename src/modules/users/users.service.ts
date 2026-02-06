@@ -20,11 +20,27 @@ export class UsersService {
   async createUser(params: {
     email: string;
     passwordHash: string;
+    firstName: string;
+    lastName: string;
+    phone: string;
     role?: UserRole;
+    avatar?: string; // optionnel si tu veux une valeur par défaut
   }) {
+    const email = params.email.trim().toLowerCase();
+
+    const firstName = params.firstName.trim();
+    const lastName = params.lastName.trim();
+
+    // Normalisation simple (enlève espaces/tirets) — adapte selon ton format
+    const phone = params.phone.replace(/\s|-/g, '').trim();
+
     return this.userModel.create({
-      email: params.email.toLowerCase(),
+      email,
       passwordHash: params.passwordHash,
+      firstName,
+      lastName,
+      phone,
+      avatar: params.avatar ?? 'defpic.jpg',
       role: params.role ?? 'USER',
     });
   }

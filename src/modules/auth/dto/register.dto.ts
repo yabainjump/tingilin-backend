@@ -1,10 +1,54 @@
-import { IsEmail, IsString, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsNotEmpty,
+  IsString,
+  Matches,
+  MinLength,
+  IsOptional,
+} from 'class-validator';
 
 export class RegisterDto {
   @IsEmail()
-  email: string;
+  email!: string;
 
   @IsString()
-  @MinLength(6)
-  password: string;
+  @IsNotEmpty()
+  firstName!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  lastName!: string;
+
+  // Simple règle: +237xxxxxxxxx ou +xxxxxxxxxxx
+  @IsString()
+  @Matches(/^\+\d{7,15}$/, {
+    message: 'phone must be in E.164 format like +2376xxxxxxx',
+  })
+  phone!: string;
+
+  @IsString()
+  @MinLength(8)
+  @Matches(/[A-Z]/, {
+    message: 'password must contain at least 1 uppercase letter',
+  })
+  @Matches(/[\W_]/, {
+    message: 'password must contain at least 1 special character',
+  })
+  password!: string;
+
+  @IsOptional()
+  @IsString()
+  username?: string;
+
+  @IsOptional()
+  @IsString()
+  country?: string;
+
+  @IsOptional()
+  @IsString()
+  city?: string;
+
+  @IsOptional()
+  @IsString()
+  avatar?: string;
 }

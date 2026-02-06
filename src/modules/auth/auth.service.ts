@@ -8,6 +8,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { UsersService } from '../users/users.service';
 import type { StringValue } from 'ms';
+import { RegisterDto } from './dto/register.dto';
 
 @Injectable()
 export class AuthService {
@@ -17,18 +18,40 @@ export class AuthService {
     private readonly config: ConfigService,
   ) {}
 
-  async register(email: string, password: string) {
+  async register(dto: RegisterDto) {
+    const email = dto.email.toLowerCase();
+
     const existing = await this.usersService.findByEmail(email);
     if (existing) throw new ConflictException('Email already in use');
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await this.hashPassword(dto.password);
+
     const user = await this.usersService.createUser({
       email,
       passwordHash,
-      role: 'USER',
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      phone: dto.phone,
     });
 
-    return this.issueTokens(user._id.toString(), user.email, user.role);
+    return this.signToken(user);
+  }
+
+  private async hashPassword(password: string): Promise<string> {
+    const saltRounds = 10;
+    return bcrypt.hash(password, saltRounds);
+  }
+
+  private async signToken(user: any): Promise<{ access_token: string }> {
+    const payload = {
+      sub: user.id ?? user._id?.toString(),
+      email: user.email,
+      role: user.role,
+    };
+
+    return {
+      access_token: await this.jwtService.signAsync(payload),
+    };
   }
 
   async login(email: string, password: string) {
