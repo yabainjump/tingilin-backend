@@ -1,51 +1,62 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument } from 'mongoose';
+import { Types } from 'mongoose';
+
+export enum RaffleStatus {
+  DRAFT = 'DRAFT',
+  LIVE = 'LIVE',
+  CLOSED = 'CLOSED',
+  DRAWN = 'DRAWN',
+}
 
 export type RaffleDocument = HydratedDocument<Raffle>;
-export type RaffleStatus = 'DRAFT' | 'LIVE' | 'CLOSED' | 'DRAWN';
 
 @Schema({ timestamps: true })
 export class Raffle {
-  @Prop({ type: Types.ObjectId, required: true })
+  @Prop({ type: Types.ObjectId, ref: 'Product', required: true })
   productId: Types.ObjectId;
 
   @Prop({ required: true, min: 0 })
   ticketPrice: number;
 
-  @Prop({ type: String, default: 'XAF' })
+  @Prop({ default: 'XAF' })
   currency: string;
 
-  @Prop({ type: Date, required: true })
-  startAt: Date;
+  @Prop({ default: 0 })
+  totalTickets: number;
 
-  @Prop({ type: Date, required: true })
-  endAt: Date;
-
-  @Prop({ type: String, default: 'DRAFT' })
-  status: RaffleStatus;
-
-  @Prop({ type: String, default: '' })
-  rules: string;
-
-  // stats dénormalisées (on les mettra à jour quand on fera tickets)
-  @Prop({ type: Number, default: 0 })
+  @Prop({ default: 0 })
   ticketsSold: number;
 
-  @Prop({ type: Number, default: 0 })
+  @Prop({ default: 0 })
   participantsCount: number;
 
-  @Prop({ type: Types.ObjectId, required: true })
-  createdBy: Types.ObjectId;
-
-  @Prop({ type: Types.ObjectId })
-  winnerUserId?: Types.ObjectId;
-
-  @Prop({ type: Types.ObjectId })
-  winnerTicketId?: Types.ObjectId;
+  @Prop({ type: Date })
+  startAt: Date;
 
   @Prop({ type: Date })
-  drawnAt?: Date;
+  endAt: Date;
+
+  @Prop({ default: '' })
+  rules: string;
+
+  @Prop({ enum: RaffleStatus, default: RaffleStatus.DRAFT })
+  status: RaffleStatus;
+
+  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  createdBy: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Ticket', default: null })
+  winnerTicketId: Types.ObjectId | null;
+
+  @Prop({ type: Types.ObjectId, ref: 'User', default: null })
+  winnerUserId: Types.ObjectId | null;
+
+  @Prop({ type: Date, default: null })
+  drawnAt: Date | null;
+
+  @Prop({ default: '' })
+  badge: string;
 }
 
 export const RaffleSchema = SchemaFactory.createForClass(Raffle);
-RaffleSchema.index({ status: 1, endAt: 1 });

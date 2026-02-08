@@ -1,6 +1,12 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import { Controller, Get, Body, Post, UseGuards, Req } from '@nestjs/common';
 import { RafflesService } from './raffles.service';
 import { RafflesPublicService } from './raffles.public.service';
+
+import { AdminCreateRaffleDto } from './dto/admin-create-raffle.dto';
+
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
 
 @Controller('raffles')
 export class RafflesController {
@@ -14,30 +20,18 @@ export class RafflesController {
     return this.rafflesService.listPublic();
   }
 
-  // @Get(':id/winner')
-  // async winner(@Param('id') id: string) {
-  //   const r = await this.rafflesService.getPublicById(id);
-  //   return {
-  //     raffleId: r._id.toString(),
-  //     status: r.status,
-  //     winnerUserId: r.winnerUserId?.toString() ?? null,
-  //     winnerTicketId: r.winnerTicketId?.toString() ?? null,
-  //     drawnAt: r.drawnAt ?? null,
-  //   };
-  // }
-
   @Get('live')
   listLive() {
     return this.rafflesPublicService.listLive(); // ou rafflesService.listLivePublic()
   }
 
-  // @Get(':id')
-  // get(@Param('id') id: string) {
-  //   return this.rafflesService.getPublicById(id);
-  // }
-
-  // @Get(':id/stats')
-  // stats(@Param('id') id: string) {
-  //   return this.rafflesService.getStats(id);
-  // }
+  @Post('admin/create-with-product')
+  @UseGuards(JwtAuthGuard)
+  async adminCreateWithProduct(
+    @Body() dto: AdminCreateRaffleDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.sub ?? req.user?.id ?? req.user?._id;
+    return this.rafflesService.adminCreateRaffle(dto, String(userId));
+  }
 }

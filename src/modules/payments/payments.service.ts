@@ -163,7 +163,7 @@ export class PaymentsService {
         raffleId: new Types.ObjectId(dto.raffleId),
         quantity,
         amount,
-        currency: raffle.currency,
+        currency: raffle.currency ?? 'XAF',
         provider: dto.provider ?? 'MOCK',
         status: 'PENDING',
       });
