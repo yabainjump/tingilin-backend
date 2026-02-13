@@ -26,12 +26,10 @@ export class RafflesController {
   }
 
   @Post('admin/create-with-product')
-  @UseGuards(JwtAuthGuard)
-  async adminCreateWithProduct(
-    @Body() dto: AdminCreateRaffleDto,
-    @Req() req: any,
-  ) {
-    const userId = req.user?.sub ?? req.user?.id ?? req.user?._id;
-    return this.rafflesService.adminCreateRaffle(dto, String(userId));
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  createWithProduct(@Body() dto: AdminCreateRaffleDto, @Req() req: any) {
+    const userId = req.user?.sub || req.user?.id || req.user?.userId;
+    return this.rafflesService.adminCreateRaffle(dto, userId);
   }
 }
