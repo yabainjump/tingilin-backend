@@ -30,4 +30,9 @@ export class AuthController {
   me(@Request() req: any) {
     return req.user; // { sub, email, role }
   }
+
+  @Post('refresh')
+  refresh(@Body('refresh_token') refresh_token: string) {
+    return this.authService.refresh(refresh_token);
+  }
 }

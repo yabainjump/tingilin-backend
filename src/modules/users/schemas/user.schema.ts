@@ -30,7 +30,7 @@ export class User {
   phone!: string;
 
   // photo par défaut demandée dans le doc
-  @Prop({ default: 'defpic.jpg' })
+  @Prop({ default: '../profile.svg' })
   avatar!: string;
 
   @Prop({ type: Object, default: {} })

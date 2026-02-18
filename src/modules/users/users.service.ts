@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
@@ -6,6 +10,7 @@ import { User, UserDocument, UserRole } from './schemas/user.schema';
 import { Ticket, TicketDocument } from '../tickets/schemas/ticket.schema';
 import { Raffle, RaffleDocument } from '../raffles/schemas/raffle.schema';
 import { Product, ProductDocument } from '../products/schemas/product.schema';
+import { UpdateMeDto } from './dto/update-me.dto';
 
 type HistoryResult = 'WON' | 'LOST';
 
@@ -26,7 +31,45 @@ export class UsersService {
   }
 
   async findById(id: string) {
-    return this.userModel.findById(id).exec();
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Invalid user id');
+    }
+    const user = await this.userModel.findById(id).exec();
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
+
+  toPublic(user: UserDocument) {
+    return {
+      _id: user._id.toString(),
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      phone: user.phone,
+      role: user.role,
+      status: user.status,
+      avatar: user.avatar,
+    };
+  }
+
+  async updateMe(id: string, dto: UpdateMeDto) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Invalid user id');
+    }
+
+    const $set: any = {};
+    if (dto.firstName !== undefined) $set.firstName = dto.firstName.trim();
+    if (dto.lastName !== undefined) $set.lastName = dto.lastName.trim();
+    if (dto.phone !== undefined)
+      $set.phone = dto.phone.replace(/\s|-/g, '').trim();
+    if (dto.avatar !== undefined) $set.avatar = dto.avatar;
+
+    const updated = await this.userModel
+      .findByIdAndUpdate(id, { $set }, { new: true })
+      .exec();
+
+    if (!updated) throw new NotFoundException('User not found');
+    return updated;
   }
 
   async createUser(params: {
@@ -36,14 +79,11 @@ export class UsersService {
     lastName: string;
     phone: string;
     role?: UserRole;
-    avatar?: string; // optionnel si tu veux une valeur par défaut
+    avatar?: string;
   }) {
     const email = params.email.trim().toLowerCase();
-
     const firstName = params.firstName.trim();
     const lastName = params.lastName.trim();
-
-    // Normalisation simple (enlève espaces/tirets) — adapte selon ton format
     const phone = params.phone.replace(/\s|-/g, '').trim();
 
     return this.userModel.create({
@@ -52,7 +92,7 @@ export class UsersService {
       firstName,
       lastName,
       phone,
-      avatar: params.avatar ?? 'defpic.jpg',
+      avatar: params.avatar ?? 'profile.svg', // cohérent avec ton schema user
       role: params.role ?? 'USER',
     });
   }
@@ -74,7 +114,7 @@ export class UsersService {
       lastName: u.lastName,
       phone: u.phone,
       role: u.role,
-      avatar: u.avatar, // ex: defpic.jpg ou url
+      avatar: u.avatar,
       profile: u.profile ?? {},
     };
   }
@@ -99,9 +139,6 @@ export class UsersService {
   async getMyHistory(userId: string, limit = 5) {
     const uid = new Types.ObjectId(userId);
 
-    // IMPORTANT:
-    // - Ticket doit avoir createdAt (timestamps). Si ton ticket.schema n’a pas timestamps,
-    //   ajoute @Schema({ timestamps: true }) sinon lastAt sera vide.
     const rows = await this.ticketModel
       .aggregate([
         { $match: { userId: uid } },
@@ -151,7 +188,6 @@ export class UsersService {
       .filter((x) => x?.title)
       .map((x) => {
         const ticketsCount = Number(x.ticketsCount ?? 0);
-
         const isWon =
           x.winnerUserId && String(x.winnerUserId) === String(userId);
 
@@ -175,6 +211,6 @@ export class UsersService {
       month: 'short',
     }).format(d);
 
-    return s.replace('.', ''); // ex "24 oct" -> "24 oct"
+    return s.replace('.', '');
   }
 }

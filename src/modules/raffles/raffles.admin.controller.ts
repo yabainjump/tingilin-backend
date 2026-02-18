@@ -33,7 +33,7 @@ export class RafflesAdminController {
 
   @Get(':id/winner')
   async winner(@Param('id') id: string) {
-    const r = await this.rafflesService.getPublicById(id);
+    const r = await this.rafflesService.adminGetById(id);
     return {
       raffleId: r._id.toString(),
       status: r.status,

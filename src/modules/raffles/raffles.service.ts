@@ -47,41 +47,116 @@ export class RafflesService {
   // =======================
   // Public
   // =======================
-  async listPublic() {
-    return this.raffleModel
+  async listPublic(opts?: { limit?: number; sort?: 'endAt' | 'createdAt' }) {
+    const limit = Math.min(Math.max(Number(opts?.limit ?? 30), 1), 100);
+
+    const sort =
+      opts?.sort === 'endAt' ? { endAt: 1, createdAt: -1 } : { createdAt: -1 };
+
+    // ✅ IMPORTANT: populate productId pour récupérer title/imageUrl
+    const raffles = await this.raffleModel
       .find({
         status: {
           $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
         },
       })
-      .populate({
-        path: 'productId',
-        select: 'title description imageUrl categoryId realValue',
-      })
-      .sort({ createdAt: -1 })
+      .populate('productId', 'title description imageUrl')
+      .sort(sort as any)
+      .limit(limit)
       .lean()
       .exec();
+
+    return raffles.map((r: any) => {
+      const p = r.productId || {};
+      const endsAt = r.endAt ? new Date(r.endAt).toISOString() : undefined;
+
+      let badgeText = 'LIVE';
+      let badgeType: 'danger' | 'warn' | 'hot' = 'hot';
+
+      if (endsAt) {
+        const ms = new Date(endsAt).getTime() - Date.now();
+        if (ms <= 0) {
+          badgeText = 'ENDED';
+          badgeType = 'danger';
+        } else if (ms <= 2 * 60 * 60 * 1000) {
+          badgeText = 'CLOSING';
+          badgeType = 'danger';
+        } else if (ms <= 24 * 60 * 60 * 1000) {
+          badgeText = 'TODAY';
+          badgeType = 'warn';
+        }
+      }
+
+      return {
+        id: r._id?.toString(),
+        title: p.title ?? '—',
+        subtitle: p.description ?? '',
+        imageUrl: p.imageUrl ?? '',
+        sold: r.ticketsSold ?? 0,
+        total: r.totalTickets ?? 0,
+        endsAt,
+        badgeText,
+        badgeType,
+      };
+    });
   }
 
-  async getPublicById(id: string) {
-    this.ensureObjectId(id);
+  // async getPublicById(id: string) {
+  //   this.ensureObjectId(id);
 
-    try {
-      const r = await this.raffleModel
-        .findById(id)
-        .populate({
-          path: 'productId',
-          select: 'title description imageUrl categoryId realValue',
-        })
-        .lean()
-        .exec();
+  //   try {
+  //     const r = await this.raffleModel
+  //       .findById(id)
+  //       .populate({
+  //         path: 'productId',
+  //         select: 'title description imageUrl categoryId realValue',
+  //       })
+  //       .lean()
+  //       .exec();
 
-      if (!r) throw new NotFoundException('Raffle not found');
-      return r;
-    } catch (e: any) {
-      if (e?.name === 'CastError') throw new BadRequestException('Invalid id');
-      throw e;
+  //     if (!r) throw new NotFoundException('Raffle not found');
+  //     return r;
+  //   } catch (e: any) {
+  //     if (e?.name === 'CastError') throw new BadRequestException('Invalid id');
+  //     throw e;
+  //   }
+  // }
+
+  async getPublicDetails(id: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Invalid id');
     }
+
+    const r = await this.raffleModel
+      .findById(id)
+      .populate({
+        path: 'productId',
+        select: 'title description imageUrl realValue categoryId',
+      })
+      .lean()
+      .exec();
+
+    if (!r) throw new NotFoundException('Raffle not found');
+
+    const p: any = r.productId;
+
+    return {
+      id: r._id.toString(),
+
+      // produit
+      title: p?.title ?? '',
+      description: p?.description ?? '',
+      imageUrl: p?.imageUrl ?? '',
+      realValue: p?.realValue ?? 0,
+
+      // raffle
+      ticketPrice: r.ticketPrice,
+      currency: r.currency ?? 'XAF',
+      sold: r.ticketsSold ?? 0,
+      total: r.totalTickets ?? 0,
+      endsAt: r.endAt ? new Date(r.endAt).toISOString() : null,
+      status: r.status,
+    };
   }
 
   async getStats(id: string) {
@@ -256,84 +331,87 @@ export class RafflesService {
     };
   }
 
-  // =======================
-  // ✅ Admin Create (Product + Raffle en 1 requête)
-  // =======================
   // async adminCreateRaffle(dto: AdminCreateRaffleDto, createdBy: string) {
-  //   const now = new Date();
+  //   if (!Types.ObjectId.isValid(createdBy)) {
+  //     throw new BadRequestException('Invalid createdBy');
+  //   }
+
   //   const publishNow = dto.publishNow !== false; // default true
+  //   const now = new Date();
 
   //   const startAt = publishNow
   //     ? now
   //     : dto.raffle.startAt
-  //       ? this.toDate(dto.raffle.startAt)
+  //       ? new Date(dto.raffle.startAt)
   //       : now;
 
-  //   const endAt = this.toDate(dto.raffle.endAt);
+  //   const endAt = new Date(dto.raffle.endAt);
 
+  //   if (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime())) {
+  //     throw new BadRequestException('Invalid dates');
+  //   }
   //   if (endAt <= startAt) {
   //     throw new BadRequestException('endAt must be after startAt');
   //   }
-  //   if (publishNow && endAt <= now) {
-  //     throw new BadRequestException('endAt doit être dans le futur');
-  //   }
 
-  //   // ✅ IMPORTANT: éviter le 500 si ton schema exige totalTickets
-  //   const totalTickets = dto.raffle.totalTickets ?? 1000;
+  //   const categoryId =
+  //     dto.product.categoryId && dto.product.categoryId.trim()
+  //       ? dto.product.categoryId.trim()
+  //       : 'all'; // fallback
 
-  //   const session = await this.connection.startSession();
-  //   session.startTransaction();
+  //   const product = await this.productModel.create({
+  //     title: dto.product.title,
+  //     description: dto.product.description ?? '',
+  //     imageUrl: dto.product.imageUrl,
+
+  //     categoryId,
+  //     createdBy: new Types.ObjectId(createdBy),
+
+  //     realValue: dto.product.realValue ?? 0,
+  //   });
 
   //   try {
-  //     // 1) Product
-  //     const product = new this.productModel({
-  //       title: dto.product.title,
-  //       description: dto.product.description ?? '',
-  //       imageUrl: dto.product.imageUrl,
-  //       categoryId: dto.product.categoryId,
-  //       realValue: dto.product.realValue ?? 0,
-  //     });
-
-  //     await product.save({ session });
-
-  //     // 2) Raffle
-  //     const raffle = new this.raffleModel({
-  //       productId: new Types.ObjectId(product._id),
+  //     const rafflePayload: any = {
+  //       productId: product._id,
   //       ticketPrice: dto.raffle.ticketPrice,
   //       currency: dto.raffle.currency ?? 'XAF',
-
-  //       totalTickets,
-  //       ticketsSold: 0,
-  //       participantsCount: 0,
-
   //       startAt,
   //       endAt,
-  //       rules: (dto.raffle as any).rules ?? '',
-  //       badge: dto.raffle.badge,
-
+  //       rules: dto.raffle.rules ?? '',
   //       status: publishNow ? RaffleStatus.LIVE : RaffleStatus.DRAFT,
   //       createdBy: new Types.ObjectId(createdBy),
-  //     } as any);
+  //       badge: dto.raffle.badge ?? '',
+  //     };
 
-  //     await raffle.save({ session });
+  //     // optionnels
+  //     if (
+  //       dto.raffle.totalTickets !== undefined &&
+  //       dto.raffle.totalTickets !== null
+  //     ) {
+  //       rafflePayload.totalTickets = Number(dto.raffle.totalTickets);
+  //     }
 
-  //     await session.commitTransaction();
+  //     const raffle = await this.raffleModel.create(rafflePayload);
 
   //     return { product, raffle };
-  //   } catch (e) {
-  //     await session.abortTransaction();
-  //     throw e;
-  //   } finally {
-  //     session.endSession();
+  //   } catch (e: any) {
+  //     // rollback simple
+  //     await this.productModel
+  //       .deleteOne({ _id: product._id })
+  //       .catch(() => undefined);
+
+  //     // renvoyer un message exploitable (au lieu d’un 500 muet)
+  //     throw new BadRequestException(e?.message ?? 'Create raffle failed');
   //   }
   // }
+
   async adminCreateRaffle(dto: AdminCreateRaffleDto, createdBy: string) {
-    if (!Types.ObjectId.isValid(createdBy)) {
+    if (!createdBy || !Types.ObjectId.isValid(createdBy)) {
       throw new BadRequestException('Invalid createdBy');
     }
 
-    const publishNow = dto.publishNow !== false; // default true
     const now = new Date();
+    const publishNow = dto.publishNow !== false;
 
     const startAt = publishNow
       ? now
@@ -350,65 +428,119 @@ export class RafflesService {
       throw new BadRequestException('endAt must be after startAt');
     }
 
-    // 1) Create Product
-    // const product = await this.productModel.create({
-    //   title: dto.product.title,
-    //   description: dto.product.description ?? '',
-    //   imageUrl: dto.product.imageUrl,
-    //   categoryId: dto.product.categoryId || undefined,
-    //   realValue: dto.product.realValue ?? 0,
-    // });
-
+    // ✅ categoryId est REQUIRED chez toi → on force une valeur
     const categoryId =
-      dto.product.categoryId && dto.product.categoryId.trim()
-        ? dto.product.categoryId.trim()
-        : 'all'; // fallback
+      (dto.product.categoryId && String(dto.product.categoryId).trim()) ||
+      'GENERAL';
 
-    const product = await this.productModel.create({
-      title: dto.product.title,
-      description: dto.product.description ?? '',
-      imageUrl: dto.product.imageUrl,
+    const session = await this.connection.startSession();
+    session.startTransaction();
 
-      // ✅ REQUIRED fields in your Product schema
-      categoryId,
-      createdBy: new Types.ObjectId(createdBy),
+    try {
+      // 1) Create Product (✅ ajoute createdBy + categoryId)
+      const product = await this.productModel.create(
+        [
+          {
+            title: dto.product.title,
+            description: dto.product.description ?? '',
+            imageUrl: dto.product.imageUrl,
+            categoryId,
+            realValue: dto.product.realValue ?? 0,
+            createdBy: new Types.ObjectId(createdBy),
+          },
+        ],
+        { session },
+      );
 
-      realValue: dto.product.realValue ?? 0,
+      const createdProduct = product[0];
+
+      // 2) Create Raffle
+      const raffle = await this.raffleModel.create(
+        [
+          {
+            productId: new Types.ObjectId(createdProduct._id),
+            ticketPrice: dto.raffle.ticketPrice,
+            currency: dto.raffle.currency ?? 'XAF',
+            totalTickets: dto.raffle.totalTickets ?? 0,
+            ticketsSold: 0,
+            participantsCount: 0,
+            startAt,
+            endAt,
+            rules: dto.raffle.rules ?? '',
+            status: publishNow ? RaffleStatus.LIVE : RaffleStatus.DRAFT,
+            createdBy: new Types.ObjectId(createdBy),
+            badge: dto.raffle.badge ?? '',
+          },
+        ],
+        { session },
+      );
+
+      await session.commitTransaction();
+
+      return {
+        product: createdProduct,
+        raffle: raffle[0],
+      };
+    } catch (e) {
+      await session.abortTransaction();
+      throw e;
+    } finally {
+      session.endSession();
+    }
+  }
+
+  async listLiveForHome(opts: {
+    category: string;
+    limit: number;
+    sort: string;
+  }) {
+    const sortStage = opts.sort === 'endAt' ? { endAt: 1 } : { createdAt: -1 };
+
+    const pipeline: any[] = [
+      { $match: { status: RaffleStatus.LIVE } },
+
+      {
+        $lookup: {
+          from: 'products',
+          localField: 'productId',
+          foreignField: '_id',
+          as: 'product',
+        },
+      },
+      { $unwind: '$product' },
+    ];
+
+    if (opts.category && opts.category !== 'all') {
+      pipeline.push({ $match: { 'product.categoryId': opts.category } });
+    }
+
+    pipeline.push({ $sort: sortStage });
+    pipeline.push({ $limit: opts.limit });
+
+    pipeline.push({
+      $project: {
+        id: { $toString: '$_id' },
+        title: '$product.title',
+        imageUrl: '$product.imageUrl',
+        badge: '$badge',
+        total: '$totalTickets',
+        sold: '$ticketsSold',
+        ticketPrice: '$ticketPrice',
+        currency: '$currency',
+        endAt: '$endAt',
+      },
     });
 
-    // 2) Create Raffle (si ça échoue => rollback product)
-    try {
-      const rafflePayload: any = {
-        productId: product._id,
-        ticketPrice: dto.raffle.ticketPrice,
-        currency: dto.raffle.currency ?? 'XAF',
-        startAt,
-        endAt,
-        rules: dto.raffle.rules ?? '',
-        status: publishNow ? RaffleStatus.LIVE : RaffleStatus.DRAFT,
-        createdBy: new Types.ObjectId(createdBy),
-        badge: dto.raffle.badge ?? '',
-      };
+    return this.raffleModel.aggregate(pipeline).exec();
+  }
 
-      // optionnels
-      if (
-        dto.raffle.totalTickets !== undefined &&
-        dto.raffle.totalTickets !== null
-      ) {
-        rafflePayload.totalTickets = Number(dto.raffle.totalTickets);
-      }
-
-      const raffle = await this.raffleModel.create(rafflePayload);
-
-      return { product, raffle };
-    } catch (e: any) {
-      // rollback simple
-      await this.productModel
-        .deleteOne({ _id: product._id })
-        .catch(() => undefined);
-
-      // renvoyer un message exploitable (au lieu d’un 500 muet)
-      throw new BadRequestException(e?.message ?? 'Create raffle failed');
+  async getPublicById(id: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Invalid id');
     }
+
+    const r = await this.raffleModel.findById(id).lean().exec();
+    if (!r) throw new NotFoundException('Raffle not found');
+    return r;
   }
 }

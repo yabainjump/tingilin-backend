@@ -1,6 +1,15 @@
-import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Patch,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UsersService } from './users.service';
+import { UpdateMeDto } from './dto/update-me.dto';
 
 @Controller('users')
 export class UsersController {
@@ -8,8 +17,18 @@ export class UsersController {
 
   @UseGuards(JwtAuthGuard)
   @Get('me')
-  me(@Req() req: any) {
-    return this.usersService.getMe(req.user.sub);
+  async me(@Req() req: any) {
+    const userId = req.user?.sub; // vient du token
+    const user = await this.usersService.findById(userId);
+    return this.usersService.toPublic(user);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('me')
+  async updateMe(@Req() req: any, @Body() dto: UpdateMeDto) {
+    const userId = req.user?.sub;
+    const user = await this.usersService.updateMe(userId, dto);
+    return this.usersService.toPublic(user);
   }
 
   @UseGuards(JwtAuthGuard)

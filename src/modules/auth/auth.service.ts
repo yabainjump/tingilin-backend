@@ -47,6 +47,10 @@ export class AuthService {
       sub: user.id ?? user._id?.toString(),
       email: user.email,
       role: user.role,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      phone: user.phone,
+      avatar: user.avatar,
     };
 
     return {
@@ -55,28 +59,45 @@ export class AuthService {
   }
 
   async login(email: string, password: string) {
-    const user = await this.usersService.findByEmail(email);
+    const user = await this.usersService.findByEmail(email.toLowerCase());
     if (!user) throw new UnauthorizedException('Invalid credentials');
 
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) throw new UnauthorizedException('Invalid credentials');
 
-    return this.issueTokens(user._id.toString(), user.email, user.role);
+    return this.issueTokens(user); // ✅ passe l'user complet
   }
 
-  issueTokens(userId: string, email: string, role: string) {
-    const payload: Record<string, any> = { sub: userId, email, role };
+  issueTokens(user: any) {
+    // ✅ Access token = infos UI (nom/prénom/phone/avatar)
+    const accessPayload: Record<string, any> = {
+      sub: user._id.toString(),
+      email: user.email,
+      role: user.role,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      phone: user.phone,
+      avatar: user.avatar,
+    };
+
+    // ✅ Refresh token = payload minimal (bonne pratique)
+    const refreshPayload: Record<string, any> = {
+      sub: user._id.toString(),
+      email: user.email,
+      role: user.role,
+    };
 
     const accessExpires = this.config.get<string>(
       'JWT_ACCESS_EXPIRES_IN',
       '15m',
     ) as StringValue;
+
     const refreshExpires = this.config.get<string>(
       'JWT_REFRESH_EXPIRES_IN',
       '7d',
     ) as StringValue;
 
-    const access_token = this.jwtService.sign(payload, {
+    const access_token = this.jwtService.sign(accessPayload, {
       secret: this.config.get<string>(
         'JWT_ACCESS_SECRET',
         'CHANGE_ME_ACCESS_SECRET',
@@ -84,7 +105,7 @@ export class AuthService {
       expiresIn: accessExpires,
     });
 
-    const refresh_token = this.jwtService.sign(payload, {
+    const refresh_token = this.jwtService.sign(refreshPayload, {
       secret: this.config.get<string>(
         'JWT_REFRESH_SECRET',
         'CHANGE_ME_REFRESH_SECRET',
@@ -93,5 +114,25 @@ export class AuthService {
     });
 
     return { access_token, refresh_token };
+  }
+
+  async refresh(refreshToken: string) {
+    if (!refreshToken) throw new UnauthorizedException('Missing refresh token');
+
+    try {
+      const payload = await this.jwtService.verifyAsync(refreshToken, {
+        secret: this.config.get<string>(
+          'JWT_REFRESH_SECRET',
+          'CHANGE_ME_REFRESH_SECRET',
+        ),
+      });
+
+      const user = await this.usersService.findById(payload.sub);
+      if (!user) throw new UnauthorizedException('User not found');
+
+      return this.signToken(user);
+    } catch {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
   }
 }

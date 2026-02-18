@@ -30,7 +30,7 @@ export class Product {
   @Prop({ default: 0 })
   realValue?: number;
 
-  @Prop({ type: Types.ObjectId, required: true })
+  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   createdBy: Types.ObjectId;
 
   @Prop({ required: true }) categoryId: string;
