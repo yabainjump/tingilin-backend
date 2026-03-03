@@ -28,7 +28,7 @@ export class AuthController {
   @UseGuards(AuthGuard('jwt'))
   @Get('me')
   me(@Request() req: any) {
-    return req.user; // { sub, email, role }
+    return req.user; 
   }
 
   @Post('refresh')

@@ -12,6 +12,8 @@ import { MockConfirmDto } from './dto/mock-confirm.dto';
 import { Transaction, TransactionDocument } from './schemas/transaction.schema';
 import { ParticipationsService } from '../participations/participations.service';
 import { MockFailDto } from './dto/mock-fail.dto';
+import { DigikuntzPaymentsService } from './providers/digikuntz-payments.service';
+import { DigikuntzVerifyDto } from './dto/digikuntz-verify.dto';
 
 @Injectable()
 export class PaymentsService {
@@ -21,83 +23,8 @@ export class PaymentsService {
     private readonly rafflesService: RafflesService,
     private readonly ticketsService: TicketsService,
     private readonly participationsService: ParticipationsService,
+    private readonly digikuntz: DigikuntzPaymentsService,
   ) {}
-
-  // async createIntent(userId: string, dto: CreateIntentDto) {
-  //   // 1) Vérifier tombola
-  //   try {
-  //     console.log('[createIntent] dto=', dto, 'userId=', userId);
-  //     const raffle = await this.rafflesService.adminGetById(dto.raffleId);
-  //     if (raffle.status !== 'LIVE')
-  //       throw new BadRequestException('Raffle is not LIVE');
-  //     console.log('[createIntent] raffle.status=', raffle?.status, 'ticketPrice=', raffle?.ticketPrice);
-
-  //     // 2) Montant -> quantité (ticketPrice = 100)
-  //     const unit = raffle.ticketPrice; // ex: 100
-  //     if (!unit || unit <= 0)
-  //       throw new BadRequestException('Invalid ticket price');
-
-  //     if (dto.amount % unit !== 0) {
-  //       throw new BadRequestException(`Amount must be a multiple of ${unit}`);
-  //     }
-
-  //     const quantity = dto.amount / unit;
-  //     if (quantity <= 0) throw new BadRequestException('Invalid quantity');
-
-  //     // 3) Vérifier blocage + quota user (200 max)
-  //     const participation = await this.participationsService.getOrCreate(
-  //       dto.raffleId,
-  //       userId,
-  //     );
-
-  //     if (
-  //       participation.blockedUntil instanceof Date &&
-  //       participation.blockedUntil.getTime() > Date.now()
-  //     ) {
-  //       throw new BadRequestException(
-  //         'Temporarily blocked due to failed payments',
-  //       );
-  //     }
-
-  //     const MAX_TICKETS_PER_USER_PER_RAFFLE = 200;
-  //     const already =
-  //       typeof participation.totalTicketsBought === 'number'
-  //         ? participation.totalTicketsBought
-  //         : 0;
-
-  //     if (already + quantity > MAX_TICKETS_PER_USER_PER_RAFFLE) {
-  //       throw new BadRequestException(
-  //         `Ticket limit reached for this raffle (max ${MAX_TICKETS_PER_USER_PER_RAFFLE})`,
-  //       );
-  //     }
-
-  //     // 4) Créer transaction PENDING (amount est le montant réel, quantity calculée)
-  //     const tx = await this.txModel.create({
-  //       userId: new Types.ObjectId(userId),
-  //       raffleId: new Types.ObjectId(dto.raffleId),
-  //       quantity,
-  //       amount: dto.amount,
-  //       currency: raffle.currency,
-  //       provider: dto.provider ?? 'MOCK',
-  //       status: 'PENDING',
-  //     });
-
-  //     return {
-  //       transactionId: tx._id.toString(),
-  //       provider: tx.provider,
-  //       amount: tx.amount,
-  //       currency: tx.currency,
-  //       status: tx.status,
-  //       quantity, // ✅ utile côté frontend
-  //       ticketUnitPrice: unit,
-  //     };
-  //   } catch (err) {
-  //     console.error('createIntent error:', err);
-  //     throw err; // on relance pour garder les bons status (400 etc.)
-  //   }
-  // }
-
-  // DEV: Confirmer transaction et générer tickets
 
   async createIntent(userId: string, dto: CreateIntentDto) {
     try {
@@ -168,6 +95,60 @@ export class PaymentsService {
         status: 'PENDING',
       });
 
+      const provider = dto.provider ?? 'MOCK';
+
+      if (provider === 'DIGIKUNTZ') {
+        if (
+          !dto.userEmail ||
+          !dto.userPhone ||
+          !dto.userCountry ||
+          !dto.senderName
+        ) {
+          throw new BadRequestException(
+            'DIGIKUNTZ requires userEmail, userPhone, userCountry, senderName',
+          );
+        }
+
+        const payin = await this.digikuntz.createPayin({
+          amount: dto.amount,
+          reason: `TINGILIN|${tx._id.toString()}|${dto.raffleId}|${userId}|qty:${quantity}`,
+          userEmail: dto.userEmail,
+          userPhone: dto.userPhone,
+          userCountry: dto.userCountry,
+          senderName: dto.senderName,
+        });
+
+        tx.provider = 'DIGIKUNTZ';
+        tx.providerTransactionId = payin.id;
+        tx.providerRef = payin.transactionRef;
+        tx.paymentLink = payin.paymentLink;
+        tx.paymentWithTaxes = Number(payin.paymentWithTaxes ?? 0);
+        tx.rawProviderStatus = payin.status;
+        await tx.save();
+
+        return {
+          transactionId: tx._id.toString(),
+          provider: tx.provider,
+          amount: tx.amount,
+          currency: tx.currency,
+          status: tx.status,
+          quantity,
+          ticketUnitPrice: unit,
+          paymentLink: tx.paymentLink,
+          paymentWithTaxes: tx.paymentWithTaxes,
+        };
+      }
+
+      return {
+        transactionId: tx._id.toString(),
+        provider: tx.provider,
+        amount: tx.amount,
+        currency: tx.currency,
+        status: tx.status,
+        quantity,
+        ticketUnitPrice: unit,
+      };
+
       console.log('[createIntent] tx created=', tx._id.toString());
 
       return {
@@ -191,7 +172,6 @@ export class PaymentsService {
     if (tx.userId.toString() !== userId)
       throw new BadRequestException('Not your transaction');
 
-    // ✅ Idempotency
     if (tx.status === 'SUCCESS') {
       return {
         ok: true,
@@ -212,7 +192,6 @@ export class PaymentsService {
     const parts = await this.participationsService.getOrCreate(
       tx.raffleId.toString(),
       userId,
-      //test
     );
     parts.failedAttempts = 0;
     parts.blockedUntil = undefined;
@@ -221,7 +200,6 @@ export class PaymentsService {
     if (tx.status !== 'PENDING')
       throw new BadRequestException('Transaction not pending');
 
-    // ✅ Empêcher providerRef dupliqué (recommandé)
     const refUsed = await this.txModel.exists({
       provider: tx.provider,
       providerRef: dto.providerRef,
@@ -250,7 +228,6 @@ export class PaymentsService {
       );
     }
 
-    // Générer tickets
     await this.ticketsService.createMany({
       raffleId: tx.raffleId.toString(),
       userId: tx.userId.toString(),
@@ -264,8 +241,6 @@ export class PaymentsService {
       quantity: tx.quantity,
     });
 
-    // ticketsSold toujours +quantity
-    // participantsCount +1 uniquement si nouveau participant
     await this.rafflesService.incrementStats(
       tx.raffleId.toString(),
       tx.quantity,
@@ -280,10 +255,6 @@ export class PaymentsService {
     userId: string,
     quantity: number,
   ) {
-    // On incrémente ticketsSold; participantsCount = distinct users (approche simple: increment si premier achat)
-    // Pour rester simple dans cette étape, on ne calcule pas distinct; on incrémente participantsCount de 1 si quantity > 0
-    // (On améliorera en “distinct” à l’étape suivante avec une collection de participation).
-    await this.rafflesService.adminUpdate(raffleId, {}); // garde la validation
     const { default: mongoose } = await import('mongoose');
     const RaffleModel = mongoose.model('Raffle');
     await RaffleModel.updateOne(
@@ -291,63 +262,6 @@ export class PaymentsService {
       { $inc: { ticketsSold: quantity, participantsCount: 1 } },
     ).exec();
   }
-
-  // async mockFail(userId: string, dto: MockFailDto) {
-  //   const tx = await this.txModel.findById(dto.transactionId).exec();
-  //   if (!tx) throw new NotFoundException('Transaction not found');
-  //   if (tx.userId.toString() !== userId)
-  //     throw new BadRequestException('Not your transaction');
-
-  //   if (tx.status === 'SUCCESS') {
-  //     // idempotent : on ne "fail" pas une transaction réussie
-  //     return {
-  //       ok: true,
-  //       transactionId: tx._id.toString(),
-  //       status: tx.status,
-  //       idempotent: true,
-  //     };
-  //   }
-  //   if (tx.status !== 'PENDING') {
-  //     return {
-  //       ok: true,
-  //       transactionId: tx._id.toString(),
-  //       status: tx.status,
-  //       idempotent: true,
-  //     };
-  //   }
-
-  //   tx.status = 'FAILED';
-  //   tx.failReason = dto.reason; // si ce champ existe dans ton schema
-  //   tx.failedAt = new Date(); // idem
-  //   await tx.save();
-
-  //   const part = await this.participationsService.getOrCreate(
-  //     tx.raffleId.toString(),
-  //     userId,
-  //   );
-
-  //   const currentFails =
-  //     typeof part.failedAttempts === 'number' ? part.failedAttempts : 0;
-  //   part.failedAttempts = currentFails + 1;
-
-  //   // blocage après 3 échecs
-  //   const MAX_FAILS = 3;
-  //   const BLOCK_MINUTES = 10;
-
-  //   if (part.failedAttempts >= MAX_FAILS) {
-  //     part.blockedUntil = new Date(Date.now() + BLOCK_MINUTES * 60 * 1000);
-  //   }
-
-  //   await part.save();
-
-  //   return {
-  //     ok: true,
-  //     transactionId: tx._id.toString(),
-  //     status: tx.status,
-  //     failedAttempts: part.failedAttempts,
-  //     blockedUntil: part.blockedUntil ?? null,
-  //   };
-  // }
 
   async mockFail(userId: string, dto: MockFailDto) {
     const tx = await this.txModel.findById(dto.transactionId).exec();
@@ -360,7 +274,6 @@ export class PaymentsService {
       userId,
     );
 
-    // si déjà bloqué, on refuse immédiatement (niveau 2)
     if (
       part.blockedUntil instanceof Date &&
       part.blockedUntil.getTime() > Date.now()
@@ -370,7 +283,6 @@ export class PaymentsService {
       );
     }
 
-    // idempotence: si déjà terminal, ne pas ré-incrémenter
     if (tx.status === 'SUCCESS' || tx.status === 'FAILED') {
       return {
         ok: true,
@@ -414,5 +326,80 @@ export class PaymentsService {
       failedAttempts: part.failedAttempts,
       blockedUntil: part.blockedUntil ?? null,
     };
+  }
+
+  async digikuntzVerify(userId: string, dto: DigikuntzVerifyDto) {
+    const tx = await this.txModel.findById(dto.transactionId).exec();
+    if (!tx) throw new NotFoundException('Transaction not found');
+    if (tx.userId.toString() !== userId)
+      throw new BadRequestException('Not your transaction');
+    if (tx.provider !== 'DIGIKUNTZ')
+      throw new BadRequestException('Not a DIGIKUNTZ transaction');
+
+    if (tx.status === 'SUCCESS') {
+      return {
+        ok: true,
+        transactionId: tx._id.toString(),
+        status: tx.status,
+        idempotent: true,
+      };
+    }
+    if (tx.status !== 'PENDING') {
+      return { ok: false, transactionId: tx._id.toString(), status: tx.status };
+    }
+    if (!tx.providerTransactionId) {
+      throw new BadRequestException('Missing providerTransactionId');
+    }
+
+    const remote = await this.digikuntz.getTransaction(
+      tx.providerTransactionId,
+    );
+    const remoteStatus = String(remote?.status ?? '').toLowerCase();
+    tx.rawProviderStatus = remoteStatus;
+
+    if (remoteStatus === 'pending') {
+      await tx.save();
+      return { ok: true, status: 'PENDING', remoteStatus };
+    }
+
+    if (remoteStatus === 'success') {
+      tx.status = 'SUCCESS';
+      tx.confirmedAt = new Date();
+      await tx.save();
+
+      await this.ticketsService.createMany({
+        raffleId: tx.raffleId.toString(),
+        userId: tx.userId.toString(),
+        transactionId: tx._id.toString(),
+        quantity: tx.quantity,
+      });
+
+      const part = await this.participationsService.upsertAfterPurchase({
+        raffleId: tx.raffleId.toString(),
+        userId: tx.userId.toString(),
+        quantity: tx.quantity,
+      });
+
+      await this.rafflesService.incrementStats(
+        tx.raffleId.toString(),
+        tx.quantity,
+        part.wasCreated ? 1 : 0,
+      );
+
+      return { ok: true, status: 'SUCCESS', transactionId: tx._id.toString() };
+    }
+
+    if (
+      remoteStatus === 'closed' ||
+      remoteStatus === 'error' ||
+      remoteStatus.includes('error')
+    ) {
+      tx.status = 'FAILED';
+      await tx.save();
+      return { ok: false, status: 'FAILED', remoteStatus };
+    }
+
+    await tx.save();
+    return { ok: true, status: tx.status, remoteStatus };
   }
 }

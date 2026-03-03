@@ -16,7 +16,7 @@ export class UpdateMeDto {
   @MinLength(6)
   phone?: string;
 
-  // avatar = url ou filename (ex: "defpic.jpg" ou "https://...")
+ 
   @IsOptional()
   @IsString()
   avatar?: string;

@@ -21,7 +21,6 @@ export class ParticipationsService {
     const raffleObj = new Types.ObjectId(params.raffleId);
     const userObj = new Types.ObjectId(params.userId);
 
-    // upsert + incrément totalTicketsBought
     const res = await this.model
       .updateOne(
         { raffleId: raffleObj, userId: userObj },
@@ -33,7 +32,6 @@ export class ParticipationsService {
       )
       .exec();
 
-    // Si upsert a créé un doc → nouveau participant
     const wasCreated = (res as any).upsertedCount
       ? (res as any).upsertedCount > 0
       : !!(res as any).upsertedId;

@@ -92,7 +92,7 @@ export class UsersService {
       firstName,
       lastName,
       phone,
-      avatar: params.avatar ?? 'profile.svg', // cohérent avec ton schema user
+      avatar: params.avatar ?? 'profile.svg', 
       role: params.role ?? 'USER',
     });
   }

@@ -4,9 +4,6 @@ export class MockConfirmDto {
   @IsMongoId()
   transactionId: string;
 
-  // @IsString()
-  // reason: string;
-
   @IsString()
   providerRef: string;
 }

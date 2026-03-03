@@ -6,7 +6,6 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
-// Ajuste ces imports selon tes chemins exacts
 import { Raffle } from './schemas/raffle.schema';
 import { Product } from '../products/schemas/product.schema';
 
@@ -44,7 +43,6 @@ export class RafflesPublicService {
     return new Types.ObjectId(id);
   }
 
-  // LISTE DES TOMBOLAS LIVE (public)
   async listLive() {
     const now = new Date();
 
@@ -59,7 +57,6 @@ export class RafflesPublicService {
       .lean<RaffleLean[]>()
       .exec();
 
-    // Récupérer les produits liés (pour afficher titre + images côté Ionic)
     const productIds = raffles
       .map((r) => r.productId)
       .filter((x): x is Types.ObjectId => !!x);
@@ -96,7 +93,6 @@ export class RafflesPublicService {
     });
   }
 
-  // DETAIL D’UNE TOMBOLA (public)
   async getOne(id: string) {
     const _id = this.asObjectId(id);
 
@@ -128,7 +124,6 @@ export class RafflesPublicService {
     };
   }
 
-  // STATS PUBLICS (public)
   async getStats(id: string) {
     const _id = this.asObjectId(id);
 
@@ -156,11 +151,9 @@ export class RafflesPublicService {
   async getWinner(id: string) {
     const _id = this.asObjectId(id);
 
-    // On récupère la tombola
     const raffle: any = await this.raffleModel.findById(_id).lean().exec();
     if (!raffle) throw new NotFoundException('Raffle not found');
 
-    // Produit (optionnel, mais utile pour Ionic)
     const product: any = raffle.productId
       ? await this.productModel
           .findById(raffle.productId)
@@ -169,11 +162,8 @@ export class RafflesPublicService {
           .exec()
       : null;
 
-    // Winner uniquement si DRAWN
     const isDrawn = raffle.status === 'DRAWN';
 
-    // Selon ton implémentation, les champs peuvent être serial / winnerSerial.
-    // On rend ça robuste :
     const serial = raffle.serial ?? raffle.winnerSerial ?? null;
     const drawnAt = raffle.drawnAt ?? null;
 

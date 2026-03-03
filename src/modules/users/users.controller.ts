@@ -18,7 +18,7 @@ export class UsersController {
   @UseGuards(JwtAuthGuard)
   @Get('me')
   async me(@Req() req: any) {
-    const userId = req.user?.sub; // vient du token
+    const userId = req.user?.sub; 
     const user = await this.usersService.findById(userId);
     return this.usersService.toPublic(user);
   }

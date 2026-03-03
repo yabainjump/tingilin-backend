@@ -6,6 +6,8 @@ import { Transaction, TransactionSchema } from './schemas/transaction.schema';
 import { TicketsModule } from '../tickets/tickets.module';
 import { RafflesModule } from '../raffles/raffles.module';
 import { ParticipationsModule } from '../participations/participations.module';
+import { HttpModule } from '@nestjs/axios';
+import { DigikuntzPaymentsService } from './providers/digikuntz-payments.service';
 
 @Module({
   imports: [
@@ -14,10 +16,11 @@ import { ParticipationsModule } from '../participations/participations.module';
     ]),
     TicketsModule,
     RafflesModule,
+    HttpModule,
     ParticipationsModule,
   ],
   controllers: [PaymentsController],
-  providers: [PaymentsService],
+  providers: [PaymentsService, DigikuntzPaymentsService],
   exports: [PaymentsService],
 })
 export class PaymentsModule {}

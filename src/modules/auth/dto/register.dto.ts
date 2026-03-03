@@ -19,7 +19,6 @@ export class RegisterDto {
   @IsNotEmpty()
   lastName!: string;
 
-  // Simple règle: +237xxxxxxxxx ou +xxxxxxxxxxx
   @IsString()
   @Matches(/^\+\d{7,15}$/, {
     message: 'phone must be in E.164 format like +2376xxxxxxx',

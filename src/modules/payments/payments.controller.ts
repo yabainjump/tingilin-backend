@@ -1,11 +1,11 @@
 import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-// import { Throttle } from '@nestjs/throttler';
 import { CreateIntentDto } from './dto/create-intent.dto';
 import { MockConfirmDto } from './dto/mock-confirm.dto';
 import { PaymentsService } from './payments.service';
 
 import { MockFailDto } from './dto/mock-fail.dto';
+import { DigikuntzVerifyDto } from './dto/digikuntz-verify.dto';
 
 @UseGuards(AuthGuard('jwt'))
 @Controller('payments')
@@ -25,5 +25,10 @@ export class PaymentsController {
   @Post('mock/fail')
   mockFail(@Req() req: any, @Body() dto: MockFailDto) {
     return this.paymentsService.mockFail(req.user.sub, dto);
+  }
+
+  @Post('digikuntz/verify')
+  digikuntzVerify(@Req() req: any, @Body() dto: DigikuntzVerifyDto) {
+    return this.paymentsService.digikuntzVerify(req.user.sub, dto);
   }
 }

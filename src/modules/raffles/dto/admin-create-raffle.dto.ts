@@ -19,7 +19,6 @@ export class AdminCreateProductDto {
   @IsOptional()
   description?: string;
 
-  // Tu as dit: photo / import => côté API on reçoit une URL (upload géré ailleurs) ou base64 si tu veux.
   @IsString()
   @IsNotEmpty()
   imageUrl: string;
@@ -39,7 +38,7 @@ export class AdminCreateRafflePayloadDto {
   @Min(0)
   ticketPrice: number;
 
-  // optionnel (si ton schema l’a)
+  
   @IsNumber()
   @IsOptional()
   @Min(1)
@@ -47,7 +46,7 @@ export class AdminCreateRafflePayloadDto {
 
   @IsString()
   @IsOptional()
-  currency?: string; // XAF par défaut
+  currency?: string; 
 
   @IsString()
   @IsOptional()
@@ -76,5 +75,5 @@ export class AdminCreateRaffleDto {
 
   @IsBoolean()
   @IsOptional()
-  publishNow?: boolean; // default true
+  publishNow?: boolean; 
 }

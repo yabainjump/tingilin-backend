@@ -19,7 +19,7 @@ import { AuthSetupController } from './auth.setup.controller';
           'JWT_ACCESS_SECRET',
           'CHANGE_ME_ACCESS_SECRET',
         ),
-        // on NE met PAS expiresIn ici (pour éviter le problème de type)
+        
       }),
     }),
   ],

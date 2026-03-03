@@ -65,11 +65,11 @@ export class AuthService {
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) throw new UnauthorizedException('Invalid credentials');
 
-    return this.issueTokens(user); // ✅ passe l'user complet
+    return this.issueTokens(user); 
   }
 
   issueTokens(user: any) {
-    // ✅ Access token = infos UI (nom/prénom/phone/avatar)
+   
     const accessPayload: Record<string, any> = {
       sub: user._id.toString(),
       email: user.email,
@@ -80,7 +80,6 @@ export class AuthService {
       avatar: user.avatar,
     };
 
-    // ✅ Refresh token = payload minimal (bonne pratique)
     const refreshPayload: Record<string, any> = {
       sub: user._id.toString(),
       email: user.email,

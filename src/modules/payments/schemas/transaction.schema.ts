@@ -38,13 +38,22 @@ export class Transaction {
 
   @Prop({ type: Date })
   confirmedAt?: Date;
+
+  @Prop({ type: String, required: false, default: undefined })
+  providerTransactionId?: string;
+
+  @Prop({ type: String, required: false, default: undefined })
+  paymentLink?: string;
+
+  @Prop({ type: Number, required: false })
+  paymentWithTaxes?: number;
+
+  @Prop({ type: String, required: false, default: undefined })
+  rawProviderStatus?: string;
 }
 
 export const TransactionSchema = SchemaFactory.createForClass(Transaction);
 TransactionSchema.index(
-  { provider: 1, providerRef: 1 },
-  {
-    unique: true,
-    partialFilterExpression: { providerRef: { $type: 'string', $ne: '' } },
-  },
+  { provider: 1, providerTransactionId: 1 },
+  { unique: true, sparse: true },
 );

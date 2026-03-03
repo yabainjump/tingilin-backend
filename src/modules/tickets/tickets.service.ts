@@ -35,11 +35,10 @@ export class TicketsService {
       status: 'ACTIVE' as const,
     }));
 
-    // insertMany -> rapide. En cas de collision unique, on relance (rare).
     try {
       return await this.ticketModel.insertMany(docs, { ordered: false });
     } catch {
-      // fallback simple (re-essayer en générant d'autres serials)
+
       const retryDocs = docs.map((d) => ({
         ...d,
         serial: this.generateSerial(params.raffleId),

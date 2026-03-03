@@ -16,7 +16,12 @@ export class CreateIntentDto {
   amount: number;
 
   @IsOptional()
-  @IsString()
-  @IsIn(['MOCK'])
-  provider?: 'MOCK';
+  @IsIn(['MOCK', 'DIGIKUNTZ'])
+  provider?: 'MOCK' | 'DIGIKUNTZ';
+
+  
+  @IsOptional() @IsString() userEmail?: string;
+  @IsOptional() @IsString() userPhone?: string;
+  @IsOptional() @IsString() userCountry?: string;
+  @IsOptional() @IsString() senderName?: string;
 }

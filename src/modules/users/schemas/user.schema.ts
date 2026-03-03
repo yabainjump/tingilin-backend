@@ -29,7 +29,7 @@ export class User {
   @Prop({ required: true, unique: true, index: true })
   phone!: string;
 
-  // photo par défaut demandée dans le doc
+  
   @Prop({ default: '../profile.svg' })
   avatar!: string;
 
