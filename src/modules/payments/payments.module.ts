@@ -8,6 +8,7 @@ import { RafflesModule } from '../raffles/raffles.module';
 import { ParticipationsModule } from '../participations/participations.module';
 import { HttpModule } from '@nestjs/axios';
 import { DigikuntzPaymentsService } from './providers/digikuntz-payments.service';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { DigikuntzPaymentsService } from './providers/digikuntz-payments.service
     ]),
     TicketsModule,
     RafflesModule,
+    NotificationsModule,
     HttpModule,
     ParticipationsModule,
   ],

@@ -14,6 +14,7 @@ import { ParticipationsService } from '../participations/participations.service'
 import { MockFailDto } from './dto/mock-fail.dto';
 import { DigikuntzPaymentsService } from './providers/digikuntz-payments.service';
 import { DigikuntzVerifyDto } from './dto/digikuntz-verify.dto';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class PaymentsService {
@@ -24,6 +25,7 @@ export class PaymentsService {
     private readonly ticketsService: TicketsService,
     private readonly participationsService: ParticipationsService,
     private readonly digikuntz: DigikuntzPaymentsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async createIntent(userId: string, dto: CreateIntentDto) {
@@ -336,6 +338,7 @@ export class PaymentsService {
     if (tx.provider !== 'DIGIKUNTZ')
       throw new BadRequestException('Not a DIGIKUNTZ transaction');
 
+    
     if (tx.status === 'SUCCESS') {
       return {
         ok: true,
@@ -344,9 +347,11 @@ export class PaymentsService {
         idempotent: true,
       };
     }
+
     if (tx.status !== 'PENDING') {
       return { ok: false, transactionId: tx._id.toString(), status: tx.status };
     }
+
     if (!tx.providerTransactionId) {
       throw new BadRequestException('Missing providerTransactionId');
     }
@@ -385,6 +390,18 @@ export class PaymentsService {
         tx.quantity,
         part.wasCreated ? 1 : 0,
       );
+
+      await this.notifications.create({
+        userId: tx.userId.toString(),
+        type: 'PAYMENT_SUCCESS',
+        title: 'Paiement confirmé ✅',
+        body: `Tes ${tx.quantity} ticket(s) ont été générés.`,
+        data: {
+          raffleId: tx.raffleId.toString(),
+          transactionId: tx._id.toString(),
+          deepLink: `/tabs/ticket-details/${tx.raffleId.toString()}`,
+        },
+      });
 
       return { ok: true, status: 'SUCCESS', transactionId: tx._id.toString() };
     }

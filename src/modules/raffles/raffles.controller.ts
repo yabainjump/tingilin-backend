@@ -29,6 +29,11 @@ export class RafflesController {
     return this.rafflesService.listPublic();
   }
 
+  @Get('home')
+  home() {
+    return this.rafflesService.listForHome();
+  }
+
   @Get('live')
   listLive() {
     return this.rafflesPublicService.listLive(); // ou rafflesService.listLivePublic()

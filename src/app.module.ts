@@ -14,19 +14,19 @@ import { ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { ShareModule } from './modules/share/share.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     MongooseModule.forRoot(process.env.MONGO_URI as string),
-    ThrottlerModule.forRoot([
-      { ttl: 60, limit: 20 }, 
-    ]),
+    ThrottlerModule.forRoot([{ ttl: 60, limit: 20 }]),
     UsersModule,
     AuthModule,
     ProductsModule,
     RafflesModule,
     TicketsModule,
+    NotificationsModule,
     ShareModule,
     PaymentsModule,
     ParticipationsModule,

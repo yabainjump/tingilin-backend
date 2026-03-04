@@ -31,7 +31,6 @@ export class RafflesService {
     @InjectConnection() private readonly connection: Connection,
   ) {}
 
-  
   private ensureObjectId(id: string, msg = 'Invalid id'): void {
     if (!Types.ObjectId.isValid(id)) throw new BadRequestException(msg);
   }
@@ -42,14 +41,12 @@ export class RafflesService {
     return d;
   }
 
- 
   async listPublic(opts?: { limit?: number; sort?: 'endAt' | 'createdAt' }) {
     const limit = Math.min(Math.max(Number(opts?.limit ?? 30), 1), 100);
 
     const sort =
       opts?.sort === 'endAt' ? { endAt: 1, createdAt: -1 } : { createdAt: -1 };
 
-   
     const raffles = await this.raffleModel
       .find({
         status: {
@@ -96,7 +93,6 @@ export class RafflesService {
       };
     });
   }
-
 
   async getPublicDetails(id: string) {
     if (!Types.ObjectId.isValid(id)) {
@@ -149,7 +145,6 @@ export class RafflesService {
     };
   }
 
-
   async adminCreate(dto: CreateRaffleDto, createdBy: string) {
     this.ensureObjectId(dto.productId, 'Invalid productId');
     await this.productsService.adminGetById(dto.productId);
@@ -161,7 +156,6 @@ export class RafflesService {
       throw new BadRequestException('endAt must be after startAt');
     }
 
-    
     const totalTickets = (dto as any).totalTickets ?? 1000;
 
     return this.raffleModel.create({
@@ -174,7 +168,6 @@ export class RafflesService {
       status: RaffleStatus.DRAFT,
       createdBy: new Types.ObjectId(createdBy),
 
-    
       totalTickets,
       ticketsSold: 0,
       participantsCount: 0,
@@ -303,8 +296,6 @@ export class RafflesService {
     };
   }
 
- 
-
   async adminCreateRaffle(dto: AdminCreateRaffleDto, createdBy: string) {
     if (!createdBy || !Types.ObjectId.isValid(createdBy)) {
       throw new BadRequestException('Invalid createdBy');
@@ -328,7 +319,6 @@ export class RafflesService {
       throw new BadRequestException('endAt must be after startAt');
     }
 
-    
     const categoryId =
       (dto.product.categoryId && String(dto.product.categoryId).trim()) ||
       'GENERAL';
@@ -337,7 +327,6 @@ export class RafflesService {
     session.startTransaction();
 
     try {
-      
       const product = await this.productModel.create(
         [
           {
@@ -354,7 +343,6 @@ export class RafflesService {
 
       const createdProduct = product[0];
 
-     
       const raffle = await this.raffleModel.create(
         [
           {
@@ -442,5 +430,16 @@ export class RafflesService {
     const r = await this.raffleModel.findById(id).lean().exec();
     if (!r) throw new NotFoundException('Raffle not found');
     return r;
+  }
+  
+  async listForHome() {
+    const now = new Date();
+    const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+    const minEndsAt = new Date(Date.now() - twoDaysMs);
+    const q: any = {
+      endsAt: { $gte: minEndsAt },
+      $or: [{ startsAt: { $exists: false } }, { startsAt: { $lte: now } }],
+    };
+    return this.raffleModel.find(q).sort({ endsAt: 1 }).lean();
   }
 }
