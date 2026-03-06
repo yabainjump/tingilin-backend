@@ -4,7 +4,8 @@ export type NotificationType =
   | 'PAYMENT_SUCCESS'
   | 'RAFFLE_CREATED'
   | 'ENDING_SOON'
-  | 'WINNER_ANNOUNCED';
+  | 'WINNER_ANNOUNCED'
+  | 'FREE_TICKET_USED';
 
 @Schema({ timestamps: true })
 export class Notification {

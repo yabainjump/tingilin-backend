@@ -9,6 +9,13 @@ export enum RaffleStatus {
   DRAWN = 'DRAWN',
 }
 
+export class RaffleWinner {
+  userId!: Types.ObjectId;
+  ticketId!: Types.ObjectId;
+  drawnAt!: Date;
+  isPublished!: boolean;
+}
+
 export type RaffleDocument = HydratedDocument<Raffle>;
 
 @Schema({ timestamps: true })
@@ -57,6 +64,21 @@ export class Raffle {
 
   @Prop({ default: '' })
   badge: string;
+
+  @Prop({ type: Number, default: 0, select: false })
+  internalItemCost?: number;
+
+  @Prop({
+    type: {
+      userId: { type: Types.ObjectId, ref: 'User' },
+      ticketId: { type: Types.ObjectId, ref: 'Ticket' },
+      drawnAt: { type: Date },
+      isPublished: { type: Boolean, default: true },
+    },
+    default: null,
+    _id: false,
+  })
+  winner?: RaffleWinner | null;
 }
 
 export const RaffleSchema = SchemaFactory.createForClass(Raffle);

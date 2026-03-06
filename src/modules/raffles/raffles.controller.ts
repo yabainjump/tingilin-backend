@@ -36,7 +36,7 @@ export class RafflesController {
 
   @Get('live')
   listLive() {
-    return this.rafflesPublicService.listLive(); // ou rafflesService.listLivePublic()
+    return this.rafflesPublicService.listLive(); 
   }
 
   @Get('public')
@@ -60,5 +60,21 @@ export class RafflesController {
   @Get('public/:id')
   publicById(@Param('id') id: string) {
     return this.rafflesService.getPublicDetails(id);
+  }
+
+  @Get('winners')
+  async winners(@Query('limit') limit?: string) {
+    const n = Math.min(Math.max(parseInt(limit ?? '20', 10) || 20, 1), 100);
+    return this.rafflesService.listWinnersPublic(n);
+  }
+
+  @Get(':id/winner')
+  getWinner(@Param('id') id: string) {
+    return this.rafflesService.getWinnerPublic(id);
+  }
+
+  @Get('winners/list')
+  listWinners(@Query('limit') limit?: string) {
+    return this.rafflesService.listWinnersPublic(Number(limit) || 10);
   }
 }

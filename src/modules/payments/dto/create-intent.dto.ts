@@ -19,7 +19,6 @@ export class CreateIntentDto {
   @IsIn(['MOCK', 'DIGIKUNTZ'])
   provider?: 'MOCK' | 'DIGIKUNTZ';
 
-  
   @IsOptional() @IsString() userEmail?: string;
   @IsOptional() @IsString() userPhone?: string;
   @IsOptional() @IsString() userCountry?: string;

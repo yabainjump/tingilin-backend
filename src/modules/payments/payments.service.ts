@@ -15,6 +15,9 @@ import { MockFailDto } from './dto/mock-fail.dto';
 import { DigikuntzPaymentsService } from './providers/digikuntz-payments.service';
 import { DigikuntzVerifyDto } from './dto/digikuntz-verify.dto';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RaffleStatus } from '../raffles/schemas/raffle.schema';
+import { UsersService } from '../users/users.service';
+import { CreateFreeTicketDto } from './dto/create-free-ticket.dto';
 
 @Injectable()
 export class PaymentsService {
@@ -26,7 +29,30 @@ export class PaymentsService {
     private readonly participationsService: ParticipationsService,
     private readonly digikuntz: DigikuntzPaymentsService,
     private readonly notifications: NotificationsService,
+    private readonly usersService: UsersService,
   ) {}
+
+  private assertRafflePurchasable(raffle: any) {
+    const now = Date.now();
+    const startAt = raffle?.startAt ? new Date(raffle.startAt).getTime() : NaN;
+    const endAt = raffle?.endAt ? new Date(raffle.endAt).getTime() : NaN;
+
+    if (raffle.status !== RaffleStatus.LIVE) {
+      throw new BadRequestException('Raffle is closed');
+    }
+    if (Number.isFinite(startAt) && startAt > now) {
+      throw new BadRequestException('Raffle has not started yet');
+    }
+    if (Number.isFinite(endAt) && endAt <= now) {
+      throw new BadRequestException('Raffle has ended');
+    }
+
+    const totalTickets = Number(raffle?.totalTickets ?? 0);
+    const soldTickets = Number(raffle?.ticketsSold ?? 0);
+    if (totalTickets > 0 && soldTickets >= totalTickets) {
+      throw new BadRequestException('No tickets left for this raffle');
+    }
+  }
 
   async createIntent(userId: string, dto: CreateIntentDto) {
     try {
@@ -39,6 +65,8 @@ export class PaymentsService {
         'ticketPrice=',
         raffle?.ticketPrice,
       );
+
+      this.assertRafflePurchasable(raffle);
 
       const unit = Number(raffle.ticketPrice);
       if (!Number.isFinite(unit) || unit <= 0) {
@@ -249,6 +277,8 @@ export class PaymentsService {
       part.wasCreated ? 1 : 0,
     );
 
+    await this.usersService.evaluateMilestones(tx.userId.toString());
+
     return { ok: true, transactionId: tx._id.toString(), status: tx.status };
   }
 
@@ -263,6 +293,65 @@ export class PaymentsService {
       { _id: raffleId },
       { $inc: { ticketsSold: quantity, participantsCount: 1 } },
     ).exec();
+  }
+
+  async useFreeTicket(userId: string, dto: CreateFreeTicketDto) {
+    const raffle = await this.rafflesService.adminGetById(dto.raffleId);
+    this.assertRafflePurchasable(raffle);
+
+    await this.usersService.consumeFreeTickets(userId, 1);
+
+    const tx = await this.txModel.create({
+      userId: new Types.ObjectId(userId),
+      raffleId: new Types.ObjectId(dto.raffleId),
+      quantity: 1,
+      amount: 0,
+      currency: raffle.currency ?? 'XAF',
+      provider: 'FREE_TICKET',
+      status: 'SUCCESS',
+      confirmedAt: new Date(),
+      providerRef: `FREE-${Date.now()}-${userId.slice(-6)}`,
+    });
+
+    await this.ticketsService.createMany({
+      raffleId: dto.raffleId,
+      userId,
+      transactionId: tx._id.toString(),
+      quantity: 1,
+    });
+
+    const part = await this.participationsService.upsertAfterPurchase({
+      raffleId: dto.raffleId,
+      userId,
+      quantity: 1,
+    });
+
+    await this.rafflesService.incrementStats(
+      dto.raffleId,
+      1,
+      part.wasCreated ? 1 : 0,
+    );
+
+    await this.usersService.evaluateMilestones(userId);
+
+    await this.notifications.create({
+      userId,
+      type: 'FREE_TICKET_USED',
+      title: 'Ticket gratuit utilisé 🎁',
+      body: `Ton ticket gratuit a été utilisé sur ce raffle.`,
+      data: {
+        raffleId: dto.raffleId,
+        transactionId: tx._id.toString(),
+      },
+    });
+
+    return {
+      ok: true,
+      usedFreeTicket: true,
+      transactionId: tx._id.toString(),
+      status: tx.status,
+      quantity: 1,
+    };
   }
 
   async mockFail(userId: string, dto: MockFailDto) {
@@ -390,6 +479,8 @@ export class PaymentsService {
         tx.quantity,
         part.wasCreated ? 1 : 0,
       );
+
+      await this.usersService.evaluateMilestones(tx.userId.toString());
 
       await this.notifications.create({
         userId: tx.userId.toString(),

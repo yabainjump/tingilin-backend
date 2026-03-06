@@ -15,6 +15,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { ShareModule } from './modules/share/share.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
     ShareModule,
     PaymentsModule,
     ParticipationsModule,
+    ScheduleModule.forRoot(),
   ],
   controllers: [AppController],
   providers: [

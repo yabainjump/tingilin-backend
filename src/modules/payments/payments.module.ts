@@ -9,6 +9,7 @@ import { ParticipationsModule } from '../participations/participations.module';
 import { HttpModule } from '@nestjs/axios';
 import { DigikuntzPaymentsService } from './providers/digikuntz-payments.service';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     NotificationsModule,
     HttpModule,
     ParticipationsModule,
+    UsersModule,
   ],
   controllers: [PaymentsController],
   providers: [PaymentsService, DigikuntzPaymentsService],

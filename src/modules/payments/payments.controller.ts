@@ -6,6 +6,7 @@ import { PaymentsService } from './payments.service';
 
 import { MockFailDto } from './dto/mock-fail.dto';
 import { DigikuntzVerifyDto } from './dto/digikuntz-verify.dto';
+import { CreateFreeTicketDto } from './dto/create-free-ticket.dto';
 
 @UseGuards(AuthGuard('jwt'))
 @Controller('payments')
@@ -30,5 +31,10 @@ export class PaymentsController {
   @Post('digikuntz/verify')
   digikuntzVerify(@Req() req: any, @Body() dto: DigikuntzVerifyDto) {
     return this.paymentsService.digikuntzVerify(req.user.sub, dto);
+  }
+
+  @Post('free-ticket')
+  useFreeTicket(@Req() req: any, @Body() dto: CreateFreeTicketDto) {
+    return this.paymentsService.useFreeTicket(req.user.sub, dto);
   }
 }

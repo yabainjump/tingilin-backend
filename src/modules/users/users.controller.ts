@@ -43,4 +43,10 @@ export class UsersController {
     const n = Math.min(Math.max(parseInt(limit ?? '5', 10) || 5, 1), 50);
     return this.usersService.getMyHistory(req.user.sub, n);
   }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('me/referral-summary')
+  referralSummary(@Req() req: any) {
+    return this.usersService.getReferralSummary(req.user.sub);
+  }
 }

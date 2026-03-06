@@ -9,7 +9,10 @@ export class Ticket {
   @Prop({ type: Types.ObjectId, required: true, index: true })
   raffleId: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, required: true, index: true })
+  // @Prop({ type: Types.ObjectId, required: true, index: true })
+  // userId: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   userId: Types.ObjectId;
 
   @Prop({ type: Types.ObjectId, required: true, index: true })
