@@ -13,6 +13,7 @@ export class RafflesScheduler {
     if (this.running) return;
     this.running = true;
     try {
+      await this.rafflesService.notifyEndingSoonMilestones();
       await this.rafflesService.autoCloseAndDrawExpired();
     } finally {
       this.running = false;

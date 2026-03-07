@@ -16,8 +16,9 @@ import { Ticket, TicketDocument } from '../tickets/schemas/ticket.schema';
 import { Raffle, RaffleDocument } from '../raffles/schemas/raffle.schema';
 import { Product, ProductDocument } from '../products/schemas/product.schema';
 import { UpdateMeDto } from './dto/update-me.dto';
+import { NotificationsService } from '../notifications/notifications.service';
 
-type HistoryResult = 'WON' | 'LOST';
+type HistoryResult = 'WON' | 'LOST' | 'NONE';
 const REFERRAL_TARGET = 10;
 const LOYALTY_TARGET = 10;
 
@@ -31,6 +32,7 @@ export class UsersService {
     private readonly raffleModel: Model<RaffleDocument>,
     @InjectModel(Product.name)
     private readonly productModel: Model<ProductDocument>,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async findByEmail(email: string) {
@@ -144,11 +146,15 @@ export class UsersService {
   }
 
   private buildReferralLink(code: string): string {
-    const base = (process.env.APP_WEB_URL || 'http://localhost:8100').replace(
-      /\/+$/,
-      '',
-    );
-    return `${base}/auth/register?ref=${encodeURIComponent(code)}`;
+    const rawBase =
+      process.env.PUBLIC_API_URL ||
+      process.env.API_PUBLIC_URL ||
+      'http://localhost:3000';
+    const base = String(rawBase ?? '')
+      .trim()
+      .replace(/\/api\/v1\/?$/i, '')
+      .replace(/\/+$/, '');
+    return `${base}/share/referral/${encodeURIComponent(code)}`;
   }
 
   private appendRewardHistory(
@@ -230,6 +236,7 @@ export class UsersService {
 
   async getMyHistory(userId: string, limit = 5) {
     const uid = new Types.ObjectId(userId);
+    const now = Date.now();
 
     const rows = await this.ticketModel
       .aggregate([
@@ -266,6 +273,9 @@ export class UsersService {
 
         {
           $project: {
+            raffleId: '$raffle._id',
+            status: '$raffle.status',
+            endsAt: '$raffle.endAt',
             ticketsCount: 1,
             lastAt: 1,
             title: '$product.title',
@@ -277,17 +287,40 @@ export class UsersService {
       .exec();
 
     return rows
-      .filter((x) => x?.title)
       .map((x) => {
         const ticketsCount = Number(x.ticketsCount ?? 0);
-        const isWon =
-          x.winnerUserId && String(x.winnerUserId) === String(userId);
+        const status = String(x.status ?? '')
+          .trim()
+          .toUpperCase();
+        const endsAt = x.endsAt ? new Date(x.endsAt) : null;
+        const endsAtMs = endsAt ? endsAt.getTime() : NaN;
 
-        const result: HistoryResult = isWon ? 'WON' : 'LOST';
+        const isEndedByStatus = ['CLOSED', 'DRAWN', 'FINISHED', 'ENDED'].includes(
+          status,
+        );
+        const isEndedByTime = Number.isFinite(endsAtMs) ? endsAtMs <= now : false;
+        const isEnded = isEndedByStatus || isEndedByTime;
+
+        const hasWinner = !!x.winnerUserId;
+        const isWon =
+          hasWinner && String(x.winnerUserId) === String(userId);
+
+        let result: HistoryResult = 'NONE';
+        if (isWon) {
+          result = 'WON';
+        } else if (isEnded && hasWinner) {
+          result = 'LOST';
+        }
 
         return {
-          title: String(x.title),
+          raffleId: x.raffleId ? String(x.raffleId) : '',
+          title: String(x.title ?? 'Tombola'),
           imageUrl: String(x.imageUrl ?? ''),
+          status: status || undefined,
+          endsAt:
+            Number.isFinite(endsAtMs) && endsAt
+              ? endsAt.toISOString()
+              : undefined,
           dateLabel: this.formatDateLabel(
             x.lastAt ? new Date(x.lastAt) : new Date(),
           ),
@@ -312,6 +345,7 @@ export class UsersService {
     ]);
 
     let userChanged = false;
+    let loyaltyRewardDelta = 0;
     if (!user.referralCode) {
       user.referralCode = await this.generateUniqueReferralCode();
       userChanged = true;
@@ -331,6 +365,7 @@ export class UsersService {
 
     if (loyaltyTargetRewards > currentLoyaltyRewards) {
       const delta = loyaltyTargetRewards - currentLoyaltyRewards;
+      loyaltyRewardDelta = delta;
       user.loyaltyRewardsGranted = loyaltyTargetRewards;
       user.freeTicketsBalance = Number(user.freeTicketsBalance ?? 0) + delta;
 
@@ -349,6 +384,20 @@ export class UsersService {
 
     if (userChanged) {
       await user.save();
+    }
+
+    if (loyaltyRewardDelta > 0) {
+      await this.notifications.create({
+        userId: String(user._id),
+        type: 'FREE_TICKET_AVAILABLE',
+        title: 'Ticket gratuit disponible 🎁',
+        body: `Tu as gagné ${loyaltyRewardDelta} ticket(s) gratuit(s) grâce à ta fidélité.`,
+        data: {
+          source: 'LOYALTY',
+          amount: loyaltyRewardDelta,
+          deepLink: '/tabs/referral',
+        },
+      });
     }
 
     if (user.referredBy) {
@@ -387,6 +436,18 @@ export class UsersService {
           }
 
           await inviter.save();
+
+          await this.notifications.create({
+            userId: String(inviter._id),
+            type: 'FREE_TICKET_AVAILABLE',
+            title: 'Ticket gratuit disponible 🎁',
+            body: `Tu as gagné ${delta} ticket(s) gratuit(s) via le parrainage.`,
+            data: {
+              source: 'REFERRAL',
+              amount: delta,
+              deepLink: '/tabs/referral',
+            },
+          });
         }
       }
     }

@@ -5,6 +5,7 @@ import { User } from './schemas/user.schema';
 import { Ticket } from '../tickets/schemas/ticket.schema';
 import { Raffle } from '../raffles/schemas/raffle.schema';
 import { Product } from '../products/schemas/product.schema';
+import { NotificationsService } from '../notifications/notifications.service';
 
 describe('UsersService', () => {
   let service: UsersService;
@@ -30,6 +31,10 @@ describe('UsersService', () => {
         { provide: getModelToken(Ticket.name), useValue: modelMock },
         { provide: getModelToken(Raffle.name), useValue: modelMock },
         { provide: getModelToken(Product.name), useValue: modelMock },
+        {
+          provide: NotificationsService,
+          useValue: { create: jest.fn(), createOnce: jest.fn() },
+        },
       ],
     }).compile();
 

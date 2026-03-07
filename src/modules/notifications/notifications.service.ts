@@ -28,6 +28,37 @@ export class NotificationsService {
     });
   }
 
+  async createOnce(input: {
+    userId: string;
+    type: NotificationType;
+    title: string;
+    body: string;
+    dedupeKey: string;
+    data?: Record<string, any>;
+  }) {
+    const key = String(input.dedupeKey ?? '').trim();
+    if (!key) {
+      return this.create(input);
+    }
+
+    const q = {
+      userId: input.userId,
+      type: input.type,
+      'data.dedupeKey': key,
+    };
+
+    const existing = await this.notifModel.findOne(q).lean().exec();
+    if (existing) return existing as any;
+
+    return this.create({
+      userId: input.userId,
+      type: input.type,
+      title: input.title,
+      body: input.body,
+      data: { ...(input.data ?? {}), dedupeKey: key },
+    });
+  }
+
   async myNotifications(
     userId: string,
     opts: { unreadOnly?: boolean; page?: number; limit?: number },

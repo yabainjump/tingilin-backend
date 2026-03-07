@@ -212,10 +212,6 @@ export class AuthService {
       sub: user._id.toString(),
       email: user.email,
       role: user.role,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      phone: user.phone,
-      avatar: user.avatar,
     };
 
     const refreshPayload: Record<string, any> = {

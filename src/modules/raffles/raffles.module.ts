@@ -13,6 +13,7 @@ import { RafflesPublicController } from './raffles.public.controller';
 import { RafflesPublicService } from './raffles.public.service';
 import { RafflesScheduler } from './raffles.sheduler';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { RafflesLiveGateway } from './raffles.live.gateway';
 
 @Module({
   imports: [
@@ -31,7 +32,12 @@ import { NotificationsModule } from '../notifications/notifications.module';
     RafflesAdminController,
     RafflesPublicController,
   ],
-  providers: [RafflesService, RafflesPublicService, RafflesScheduler],
+  providers: [
+    RafflesService,
+    RafflesPublicService,
+    RafflesScheduler,
+    RafflesLiveGateway,
+  ],
   exports: [RafflesService],
 })
 export class RafflesModule {}

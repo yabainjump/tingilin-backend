@@ -48,18 +48,174 @@ export class RafflesService {
     return d;
   }
 
+  private async raffleTitle(raffle: any): Promise<string> {
+    const productId = raffle?.productId;
+    if (!productId) return 'ce raffle';
+
+    if (typeof productId === 'object' && 'title' in productId) {
+      const title = String((productId as any)?.title ?? '').trim();
+      if (title) return title;
+    }
+
+    const p: any = await this.productModel
+      .findById(productId)
+      .select('title')
+      .lean()
+      .exec();
+    return String(p?.title ?? '').trim() || 'ce raffle';
+  }
+
+  private async participantUserIds(
+    raffleId: Types.ObjectId | string,
+  ): Promise<string[]> {
+    const rid =
+      typeof raffleId === 'string' ? new Types.ObjectId(raffleId) : raffleId;
+    const ids = await this.ticketModel.distinct('userId', {
+      raffleId: rid,
+      status: { $in: ['ACTIVE', 'WINNER'] },
+    });
+    return Array.from(
+      new Set(
+        (ids ?? [])
+          .map((x: any) => String(x ?? '').trim())
+          .filter(Boolean),
+      ),
+    );
+  }
+
+  private async notifyDrawStarted(
+    raffle: any,
+    users: string[],
+  ): Promise<void> {
+    if (!users.length) return;
+
+    const raffleId = String(raffle?._id ?? '').trim();
+    if (!raffleId) return;
+
+    const title = await this.raffleTitle(raffle);
+    await Promise.all(
+      users.map((userId) =>
+        this.notifications.createOnce({
+          userId,
+          type: 'DRAW_STARTED',
+          title: 'Tirage lancé 🎬',
+          body: `Le tirage de "${title}" démarre maintenant.`,
+          dedupeKey: `draw-started:${raffleId}`,
+          data: {
+            raffleId,
+            deepLink: '/tabs/winners',
+          },
+        }),
+      ),
+    );
+  }
+
+  private async notifyDrawResults(
+    raffle: any,
+    winnerUserId: string,
+    users: string[],
+  ): Promise<void> {
+    if (!users.length) return;
+
+    const raffleId = String(raffle?._id ?? '').trim();
+    if (!raffleId) return;
+
+    const title = await this.raffleTitle(raffle);
+    const losers = users.filter((u) => String(u) !== String(winnerUserId));
+    if (!losers.length) return;
+
+    await Promise.all(
+      losers.map((userId) =>
+        this.notifications.createOnce({
+          userId,
+          type: 'DRAW_RESULT',
+          title: 'Résultat du tirage disponible',
+          body: `Le tirage de "${title}" est terminé. Appuie pour voir le résultat.`,
+          dedupeKey: `draw-result:${raffleId}`,
+          data: {
+            raffleId,
+            deepLink: `/tabs/raffle-details/${raffleId}`,
+          },
+        }),
+      ),
+    );
+  }
+
+  async notifyEndingSoonMilestones(): Promise<void> {
+    const now = Date.now();
+    const maxWindowMin = 60;
+    const upper = new Date(now + maxWindowMin * 60_000);
+
+    const raffles: any[] = await this.raffleModel
+      .find({
+        status: RaffleStatus.LIVE,
+        endAt: { $gt: new Date(now), $lte: upper },
+      })
+      .select('_id endAt productId')
+      .populate({ path: 'productId', select: 'title' })
+      .lean()
+      .exec();
+
+    for (const raffle of raffles) {
+      const endAt = raffle?.endAt ? new Date(raffle.endAt).getTime() : NaN;
+      if (!Number.isFinite(endAt)) continue;
+
+      const remainingMin = Math.ceil((endAt - now) / 60_000);
+      if (remainingMin <= 0) continue;
+
+      const windowMin =
+        remainingMin <= 5 ? 5 : remainingMin <= 15 ? 15 : 60;
+
+      const raffleId = String(raffle?._id ?? '').trim();
+      if (!raffleId) continue;
+
+      const users = await this.participantUserIds(raffleId);
+      if (!users.length) continue;
+
+      const title = await this.raffleTitle(raffle);
+      await Promise.all(
+        users.map((userId) =>
+          this.notifications.createOnce({
+            userId,
+            type: 'ENDING_SOON',
+            title: 'Le tirage se termine bientôt ⏳',
+            body: `"${title}" se termine dans environ ${windowMin} minute(s).`,
+            dedupeKey: `ending-soon:${raffleId}:${windowMin}`,
+            data: {
+              raffleId,
+              windowMin,
+              deepLink: `/tabs/raffle-details/${raffleId}`,
+            },
+          }),
+        ),
+      );
+    }
+  }
+
   async listPublic(opts?: { limit?: number; sort?: 'endAt' | 'createdAt' }) {
     const limit = Math.min(Math.max(Number(opts?.limit ?? 30), 1), 100);
+    const now = new Date();
 
     const sort =
       opts?.sort === 'endAt' ? { endAt: 1, createdAt: -1 } : { createdAt: -1 };
 
+    // Pour "Ending Soon", on veut uniquement les raffles encore jouables.
+    // Sans ça, les raffles déjà terminés peuvent saturer le top N.
+    const match =
+      opts?.sort === 'endAt'
+        ? {
+            status: RaffleStatus.LIVE,
+            endAt: { $gt: now },
+            $or: [{ startAt: { $exists: false } }, { startAt: { $lte: now } }],
+          }
+        : {
+            status: {
+              $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
+            },
+          };
+
     const raffles = await this.raffleModel
-      .find({
-        status: {
-          $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
-        },
-      })
+      .find(match as any)
       .populate('productId', 'title description imageUrl')
       .sort(sort as any)
       .limit(limit)
@@ -95,6 +251,8 @@ export class RafflesService {
         status: r.status ?? RaffleStatus.LIVE,
         sold: r.ticketsSold ?? 0,
         total: r.totalTickets ?? 0,
+        ticketPrice: Number(r.ticketPrice ?? 0),
+        currency: String(r.currency ?? 'XAF'),
         startAt: r.startAt ? new Date(r.startAt).toISOString() : undefined,
         endAt,
         endsAt: endAt,
@@ -290,6 +448,11 @@ export class RafflesService {
       throw new BadRequestException('No tickets sold');
     }
 
+    const participantIds = Array.from(
+      new Set(tickets.map((t) => String(t?.userId ?? '').trim()).filter(Boolean)),
+    );
+    await this.notifyDrawStarted(raffle, participantIds);
+
     const idx = Math.floor(Math.random() * tickets.length);
     const winner = tickets[idx];
 
@@ -325,6 +488,8 @@ export class RafflesService {
         deepLink: `/tabs/ticket-details/${String(raffle._id)}`,
       },
     });
+
+    await this.notifyDrawResults(raffle, String(winner.userId), participantIds);
 
     return {
       raffleId: raffle._id.toString(),
@@ -522,6 +687,9 @@ export class RafflesService {
       return { ok: true, status: raffle.status, winner: null };
     }
 
+    const participantIds = await this.participantUserIds(raffle._id);
+    await this.notifyDrawStarted(raffle, participantIds);
+
     const skip = Math.floor(Math.random() * count);
     const ticket = await this.ticketModel
       .findOne({ raffleId: raffle._id, status: 'ACTIVE' })
@@ -562,6 +730,8 @@ export class RafflesService {
         deepLink: `/tabs/ticket-details/${String(raffle._id)}`,
       },
     });
+
+    await this.notifyDrawResults(raffle, String(ticket.userId), participantIds);
 
     return { ok: true, status: raffle.status, winner: raffle.winner };
   }

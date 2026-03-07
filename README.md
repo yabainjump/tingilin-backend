@@ -1,101 +1,198 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Tingilin API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Backend NestJS pour authentification, utilisateurs, raffles, tickets, paiements et notifications.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Base URL locale: `http://localhost:3000/api/v1`
 
-## Description
+## Stack
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- NestJS 11
+- MongoDB (Mongoose)
+- JWT access/refresh
+- Throttling global (`20 req / 60s` par IP)
 
-## Project setup
+## Prerequis
 
-```bash
-$ npm install
+- Node.js 20+
+- npm 10+
+- Docker Desktop (recommande pour Mongo local)
+
+## Installation
+
+```powershell
+cd d:\personnel\Tinguilin\tingilin-api
+npm install
 ```
 
-## Compile and run the project
+## Configuration
 
-```bash
-# development
-$ npm run start
+1. Copier le template:
 
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+```powershell
+copy .env.example .env
 ```
 
-## Run tests
+2. Adapter les valeurs sensibles (`JWT_*`, `SETUP_KEY`, SMTP, etc.).
 
-```bash
-# unit tests
-$ npm run test
+### Variables d'environnement
 
-# e2e tests
-$ npm run test:e2e
+| Variable | Requis | Defaut code | Usage |
+|---|---|---|---|
+| `APP_PORT` | Non | `3000` | Port HTTP API |
+| `MONGO_URI` | Oui | - | Connexion MongoDB |
+| `APP_NAME` | Non | `Tingilin` | Nom app (emails) |
+| `APP_WEB_URL` | Non | `http://localhost:8100` | Lien referral genere |
+| `PUBLIC_APP_URL` | Non | `http://localhost:8100` | Redirection share page |
+| `PUBLIC_API_URL` | Non | `http://localhost:3000` | URL meta/OG share |
+| `JWT_ACCESS_SECRET` | Oui (prod) | `CHANGE_ME_ACCESS_SECRET` | Signature access token |
+| `JWT_REFRESH_SECRET` | Oui (prod) | `CHANGE_ME_REFRESH_SECRET` | Signature refresh token |
+| `JWT_ACCESS_EXPIRES_IN` | Non | `15m` | Expiration access token |
+| `JWT_REFRESH_EXPIRES_IN` | Non | `7d` | Expiration refresh token |
+| `SETUP_KEY` | Oui (si bootstrap admin) | - | Protection endpoint setup admin |
+| `PASSWORD_RESET_RESEND_COOLDOWN_SEC` | Non | `60` | Cooldown resend code reset |
+| `PASSWORD_RESET_CODE_TTL_MINUTES` | Non | `15` | Validite code reset |
+| `PASSWORD_RESET_MAX_ATTEMPTS` | Non | `5` | Tentatives max reset |
+| `PASSWORD_RESET_DEBUG_RESPONSE` | Non | `false` | Retourne le code en reponse (dev) |
+| `SMTP_HOST` | Non | vide | SMTP host |
+| `SMTP_PORT` | Non | `587` | SMTP port |
+| `SMTP_SECURE` | Non | `false` | TLS direct (`true`/`false`) |
+| `SMTP_USER` | Non | vide | SMTP username |
+| `SMTP_PASS` | Non | vide | SMTP password |
+| `MAIL_FROM` | Non | `Tingilin <no-reply@tingilin.local>` | Expediteur emails |
+| `DIGIKUNTZ_BASE_URL` | Oui (si provider DIGIKUNTZ) | - | API paiement Digikuntz |
+| `DIGIKUNTZ_USER_ID` | Oui (si provider DIGIKUNTZ) | - | Header auth Digikuntz |
+| `DIGIKUNTZ_SECRET_KEY` | Oui (si provider DIGIKUNTZ) | - | Header auth Digikuntz |
 
-# test coverage
-$ npm run test:cov
-```
-# when restart
+## MongoDB local
+
+Le repo contient `docker-compose.yml` pour MongoDB.
+
+```powershell
 docker compose up -d
-
-
-# Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+Mongo expose sur `mongodb://localhost:27017`.
 
-## Resources
+## Lancer l'API
 
-Check out a few resources that may come in handy when working with NestJS:
+```powershell
+npm run start:dev
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+## Build et tests
 
-## Support
+```powershell
+npm run build
+npm run lint
+npm run test
+npm run test:e2e
+```
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+## CORS local
 
-## Stay in touch
+Actuellement, le backend autorise `http://localhost:8100` dans `src/main.ts`.
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+Si votre frontend tourne sur un autre host/port, adaptez `app.enableCors(...)`.
 
-## License
+## Bootstrap admin (onboarding)
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Le role par defaut a l'inscription est `USER`.
+Pour creer un admin:
+
+1. Creer un compte via `POST /api/v1/auth/register`.
+2. Appeler:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:3000/api/v1/auth/setup/promote-admin" `
+  -ContentType "application/json" `
+  -Body '{"setupKey":"CHANGE_ME_SETUP_KEY","email":"admin@example.com"}'
+```
+
+Reponse attendue:
+
+```json
+{ "ok": true, "email": "admin@example.com", "role": "ADMIN" }
+```
+
+## Endpoints principaux
+
+Tous les endpoints sont prefixes par `/api/v1`.
+
+### Auth (public + user)
+
+- `POST /auth/register`
+- `POST /auth/login`
+- `POST /auth/forgot-password`
+- `POST /auth/reset-password`
+- `POST /auth/refresh`
+- `GET /auth/me` (JWT)
+
+### Users
+
+- `GET /users/me` (JWT)
+- `PATCH /users/me` (JWT)
+- `GET /users/me/stats` (JWT)
+- `GET /users/me/history` (JWT)
+- `GET /users/me/referral-summary` (JWT)
+- `PATCH /admin/users/:id/role` (ADMIN)
+
+### Raffles
+
+- Public:
+  - `GET /raffles`
+  - `GET /raffles/home`
+  - `GET /raffles/live`
+  - `GET /raffles/public`
+  - `GET /raffles/public/:id`
+  - `GET /raffles/winners`
+  - `GET /raffles/:id/winner`
+- Admin:
+  - `POST /raffles/admin/create-with-product` (ADMIN)
+  - `GET /admin/raffles` (ADMIN)
+  - `POST /admin/raffles` (ADMIN)
+  - `PATCH /admin/raffles/:id` (ADMIN)
+  - `PATCH /admin/raffles/:id/start` (ADMIN)
+  - `PATCH /admin/raffles/:id/close` (ADMIN)
+  - `PATCH /admin/raffles/:id/draw` (ADMIN)
+
+### Products
+
+- `GET /products`
+- `GET /products/:id`
+- `GET /admin/products` (ADMIN)
+- `POST /admin/products` (ADMIN)
+- `PATCH /admin/products/:id` (ADMIN)
+- `DELETE /admin/products/:id` (ADMIN)
+
+### Payments (JWT)
+
+- `POST /payments/intent`
+- `POST /payments/mock/confirm`
+- `POST /payments/mock/fail`
+- `POST /payments/digikuntz/verify`
+- `POST /payments/free-ticket`
+
+### Tickets / Notifications / Share
+
+- `GET /tickets/me` (JWT)
+- `GET /notifications/me` (JWT)
+- `GET /notifications/unread-count` (JWT)
+- `PATCH /notifications/:id/read` (JWT)
+- `PATCH /notifications/read-all` (JWT)
+- `GET /share/raffle/:id` (public, OG + redirect)
+
+## Paiement en local
+
+Pour les tests locaux rapides, utilisez le provider `MOCK`:
+
+1. `POST /payments/intent`
+2. `POST /payments/mock/confirm` pour simuler succes
+3. `POST /payments/mock/fail` pour simuler echec
+
+## Troubleshooting
+
+- `431 Request Header Fields Too Large`: token JWT invalide/trop gros cote frontend. Vider le localStorage puis se reconnecter.
+- `CORS blocked`: verifier que le frontend tourne bien sur `http://localhost:8100` ou mettre a jour `main.ts`.
+- `Mongo connection error`: verifier `MONGO_URI` et que le conteneur Mongo tourne.
+

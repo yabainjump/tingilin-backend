@@ -32,6 +32,27 @@ export class PaymentsService {
     private readonly usersService: UsersService,
   ) {}
 
+  private async notifyPaymentFailed(tx: TransactionDocument, reason?: string) {
+    const transactionId = tx._id.toString();
+    const raffleId = tx.raffleId.toString();
+    const cleanReason = String(reason ?? '').trim();
+
+    await this.notifications.createOnce({
+      userId: tx.userId.toString(),
+      type: 'PAYMENT_FAILED',
+      title: 'Paiement échoué',
+      body: cleanReason
+        ? `Paiement échoué (${cleanReason}). Appuie pour réessayer.`
+        : 'Le paiement n’a pas abouti. Appuie pour réessayer.',
+      dedupeKey: `payment-failed:${transactionId}`,
+      data: {
+        raffleId,
+        transactionId,
+        deepLink: `/tabs/raffle-details/${raffleId}`,
+      },
+    });
+  }
+
   private assertRafflePurchasable(raffle: any) {
     const now = Date.now();
     const startAt = raffle?.startAt ? new Date(raffle.startAt).getTime() : NaN;
@@ -396,6 +417,7 @@ export class PaymentsService {
     tx.failReason = dto.reason;
     tx.failedAt = new Date();
     await tx.save();
+    await this.notifyPaymentFailed(tx, dto.reason);
 
     const currentFails =
       typeof part.failedAttempts === 'number' ? part.failedAttempts : 0;
@@ -504,6 +526,10 @@ export class PaymentsService {
     ) {
       tx.status = 'FAILED';
       await tx.save();
+      await this.notifyPaymentFailed(
+        tx,
+        remoteStatus ? `provider:${remoteStatus}` : undefined,
+      );
       return { ok: false, status: 'FAILED', remoteStatus };
     }
 

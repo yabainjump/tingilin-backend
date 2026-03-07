@@ -8,9 +8,11 @@ import { UsersAdminController } from './users.admin.controller';
 import { Ticket, TicketSchema } from '../tickets/schemas/ticket.schema';
 import { Raffle, RaffleSchema } from '../raffles/schemas/raffle.schema';
 import { Product, ProductSchema } from '../products/schemas/product.schema';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
+    NotificationsModule,
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
       { name: Ticket.name, schema: TicketSchema },
