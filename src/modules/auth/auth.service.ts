@@ -15,6 +15,8 @@ import type { StringValue } from 'ms';
 import { RegisterDto } from './dto/register.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { InviteUserDto } from './dto/invite-user.dto';
+import { AuditService } from '../audit/audit.service';
 
 @Injectable()
 export class AuthService {
@@ -24,6 +26,7 @@ export class AuthService {
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
+    private readonly auditService: AuditService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -47,6 +50,19 @@ export class AuthService {
 
     const passwordHash = await this.hashPassword(dto.password);
 
+    const bootstrapFirstAdmin =
+      String(this.config.get<string>('AUTH_BOOTSTRAP_FIRST_ADMIN', 'false'))
+        .trim()
+        .toLowerCase() === 'true';
+
+    let roleForNewUser: 'ADMIN' | undefined;
+    if (bootstrapFirstAdmin) {
+      const usersCount = await this.usersService.countUsers();
+      if (usersCount === 0) {
+        roleForNewUser = 'ADMIN';
+      }
+    }
+
     const user = await this.usersService.createUser({
       email,
       passwordHash,
@@ -54,9 +70,62 @@ export class AuthService {
       lastName: dto.lastName,
       phone: dto.phone,
       referredBy,
+      role: roleForNewUser,
     });
 
     return this.issueTokens(user);
+  }
+
+  async adminInviteUser(dto: InviteUserDto) {
+    const email = String(dto.email ?? '').trim().toLowerCase();
+    const phone = String(dto.phone ?? '').replace(/\s|-/g, '').trim();
+
+    const [existingEmail, existingPhone] = await Promise.all([
+      this.usersService.findByEmail(email),
+      this.usersService.findByPhone(phone),
+    ]);
+
+    if (existingEmail) {
+      throw new ConflictException('Email already in use');
+    }
+
+    if (existingPhone) {
+      throw new ConflictException('Phone already in use');
+    }
+
+    const temporaryPassword = this.generateTemporaryPassword();
+    const passwordHash = await this.hashPassword(temporaryPassword);
+
+    const user = await this.usersService.createUser({
+      email,
+      passwordHash,
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      phone,
+      username: dto.username,
+      role: dto.role ?? 'USER',
+    });
+
+    const delivery = await this.dispatchPasswordSetupCode({
+      user,
+      genericResponse: {
+        ok: true,
+        message: 'Compte créé. Un email d’invitation a été envoyé.',
+      },
+      emailType: 'INVITE',
+      enforceCooldown: false,
+    });
+
+    return {
+      ok: true,
+      user: {
+        id: user._id.toString(),
+        email: user.email,
+        role: user.role,
+        status: user.status,
+      },
+      passwordSetup: delivery,
+    };
   }
 
   private async hashPassword(password: string): Promise<string> {
@@ -64,14 +133,122 @@ export class AuthService {
     return bcrypt.hash(password, saltRounds);
   }
 
-  async login(email: string, password: string) {
-    const user = await this.usersService.findByEmail(email.toLowerCase());
-    if (!user) throw new UnauthorizedException('Invalid credentials');
+  async login(
+    email: string,
+    password: string,
+    opts?: {
+      adminOnly?: boolean;
+      ip?: string;
+      userAgent?: string;
+    },
+  ) {
+    const normalizedEmail = String(email ?? '').trim().toLowerCase();
+    const user = await this.usersService.findByEmail(normalizedEmail);
+    if (!user) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const ip = String(opts?.ip ?? '').trim();
+    const userAgent = String(opts?.userAgent ?? '').trim();
+
+    if (String(user.status ?? 'ACTIVE').toUpperCase() !== 'ACTIVE') {
+      await this.auditService.safeLog({
+        action: opts?.adminOnly ? 'AUTH_ADMIN_LOGIN' : 'AUTH_LOGIN',
+        actorUserId: user._id.toString(),
+        actorEmail: user.email,
+        actorRole: user.role,
+        targetType: 'USER',
+        targetId: user._id.toString(),
+        status: 'FAILED',
+        metadata: { reason: 'ACCOUNT_SUSPENDED' },
+        ip,
+        userAgent,
+      });
+      throw new UnauthorizedException('Account suspended');
+    }
+
+    const now = Date.now();
+    const blockedUntilMs = user.loginBlockedUntil
+      ? new Date(user.loginBlockedUntil).getTime()
+      : 0;
+    if (blockedUntilMs && blockedUntilMs > now) {
+      const retryAfterSeconds = Math.ceil((blockedUntilMs - now) / 1000);
+      const retryAfterMinutes = Math.ceil(retryAfterSeconds / 60);
+      throw new UnauthorizedException(
+        `Trop de tentatives. Reessaie dans ${retryAfterMinutes} minute(s).`,
+      );
+    }
 
     const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) throw new UnauthorizedException('Invalid credentials');
+    if (!ok) {
+      const maxAttempts = Math.max(
+        1,
+        Number(this.config.get<string>('AUTH_LOGIN_MAX_ATTEMPTS', '5')),
+      );
+      const lockMinutes = Math.max(
+        1,
+        Number(this.config.get<string>('AUTH_LOGIN_LOCK_MINUTES', '15')),
+      );
+      user.failedLoginAttempts = Number(user.failedLoginAttempts ?? 0) + 1;
 
-    return this.issueTokens(user); 
+      if (Number(user.failedLoginAttempts) >= maxAttempts) {
+        user.loginBlockedUntil = new Date(now + lockMinutes * 60 * 1000);
+        user.failedLoginAttempts = 0;
+      }
+      await user.save();
+
+      await this.auditService.safeLog({
+        action: opts?.adminOnly ? 'AUTH_ADMIN_LOGIN' : 'AUTH_LOGIN',
+        actorUserId: user._id.toString(),
+        actorEmail: user.email,
+        actorRole: user.role,
+        targetType: 'USER',
+        targetId: user._id.toString(),
+        status: 'FAILED',
+        metadata: {
+          reason: 'INVALID_CREDENTIALS',
+          blockedUntil: user.loginBlockedUntil ?? null,
+        },
+        ip,
+        userAgent,
+      });
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    if (opts?.adminOnly && user.role !== 'ADMIN') {
+      await this.auditService.safeLog({
+        action: 'AUTH_ADMIN_LOGIN',
+        actorUserId: user._id.toString(),
+        actorEmail: user.email,
+        actorRole: user.role,
+        targetType: 'USER',
+        targetId: user._id.toString(),
+        status: 'FAILED',
+        metadata: { reason: 'NOT_ADMIN' },
+        ip,
+        userAgent,
+      });
+      throw new UnauthorizedException('Admin access required');
+    }
+
+    user.failedLoginAttempts = 0;
+    user.loginBlockedUntil = null;
+    user.lastLoginAt = new Date();
+    await user.save();
+
+    await this.auditService.safeLog({
+      action: opts?.adminOnly ? 'AUTH_ADMIN_LOGIN' : 'AUTH_LOGIN',
+      actorUserId: user._id.toString(),
+      actorEmail: user.email,
+      actorRole: user.role,
+      targetType: 'USER',
+      targetId: user._id.toString(),
+      metadata: { success: true },
+      ip,
+      userAgent,
+    });
+
+    return this.issueTokens(user);
   }
 
   async forgotPassword(dto: ForgotPasswordDto) {
@@ -89,64 +266,12 @@ export class AuthService {
 
     // Anti-enumeration: do not reveal if user exists.
     if (!user) return genericResponse;
-
-    const now = Date.now();
-    const resendCooldownSec = Number(
-      this.config.get<string>('PASSWORD_RESET_RESEND_COOLDOWN_SEC', '60'),
-    );
-
-    if (user.passwordResetRequestedAt) {
-      const elapsedMs =
-        now - new Date(user.passwordResetRequestedAt).getTime();
-      const cooldownMs = Math.max(0, resendCooldownSec) * 1000;
-      if (elapsedMs < cooldownMs) {
-        const retryAfterSeconds = Math.ceil((cooldownMs - elapsedMs) / 1000);
-        return {
-          ...genericResponse,
-          retryAfterSeconds,
-        };
-      }
-    }
-
-    const ttlMinutes = Math.max(
-      1,
-      Number(this.config.get<string>('PASSWORD_RESET_CODE_TTL_MINUTES', '15')),
-    );
-
-    const code = this.generateResetCode();
-    user.passwordResetCodeHash = this.hashResetCode(code);
-    user.passwordResetCodeExpiresAt = new Date(
-      now + ttlMinutes * 60 * 1000,
-    );
-    user.passwordResetRequestedAt = new Date(now);
-    user.passwordResetAttempts = 0;
-    await user.save();
-
-    const delivered = await this.sendPasswordResetEmail(
-      user.email,
-      user.firstName,
-      code,
-      ttlMinutes,
-    );
-
-    // Keep the flow usable in dev if SMTP is not configured yet.
-    if (!delivered) {
-      this.logger.warn(
-        `[PasswordReset] SMTP non configuré, code reset pour ${user.email}: ${code}`,
-      );
-    }
-
-    const debugEnabled =
-      String(this.config.get<string>('PASSWORD_RESET_DEBUG_RESPONSE', 'false'))
-        .trim()
-        .toLowerCase() === 'true';
-
-    return {
-      ...genericResponse,
-      expiresInSeconds: ttlMinutes * 60,
-      delivery: delivered ? 'EMAIL' : 'LOG',
-      ...(debugEnabled ? { devResetCode: code } : {}),
-    };
+    return this.dispatchPasswordSetupCode({
+      user,
+      genericResponse,
+      emailType: 'RESET',
+      enforceCooldown: true,
+    });
   }
 
   async resetPassword(dto: ResetPasswordDto) {
@@ -296,8 +421,84 @@ export class AuthService {
     return this.usersService.findByEmail(value.toLowerCase());
   }
 
+  private async dispatchPasswordSetupCode(input: {
+    user: any;
+    genericResponse: { ok: boolean; message: string };
+    emailType: 'RESET' | 'INVITE';
+    enforceCooldown: boolean;
+  }) {
+    const now = Date.now();
+    const resendCooldownSec = Number(
+      this.config.get<string>('PASSWORD_RESET_RESEND_COOLDOWN_SEC', '60'),
+    );
+
+    if (input.enforceCooldown && input.user.passwordResetRequestedAt) {
+      const elapsedMs =
+        now - new Date(input.user.passwordResetRequestedAt).getTime();
+      const cooldownMs = Math.max(0, resendCooldownSec) * 1000;
+      if (elapsedMs < cooldownMs) {
+        const retryAfterSeconds = Math.ceil((cooldownMs - elapsedMs) / 1000);
+        return {
+          ...input.genericResponse,
+          retryAfterSeconds,
+        };
+      }
+    }
+
+    const ttlMinutes = Math.max(
+      1,
+      Number(this.config.get<string>('PASSWORD_RESET_CODE_TTL_MINUTES', '15')),
+    );
+
+    const code = this.generateResetCode();
+    input.user.passwordResetCodeHash = this.hashResetCode(code);
+    input.user.passwordResetCodeExpiresAt = new Date(
+      now + ttlMinutes * 60 * 1000,
+    );
+    input.user.passwordResetRequestedAt = new Date(now);
+    input.user.passwordResetAttempts = 0;
+    await input.user.save();
+
+    const delivered =
+      input.emailType === 'INVITE'
+        ? await this.sendInvitationPasswordSetupEmail(
+            input.user.email,
+            input.user.firstName,
+            code,
+            ttlMinutes,
+          )
+        : await this.sendPasswordResetEmail(
+            input.user.email,
+            input.user.firstName,
+            code,
+            ttlMinutes,
+          );
+
+    if (!delivered) {
+      this.logger.warn(
+        `[${input.emailType}] SMTP non configuré, code reset pour ${input.user.email}: ${code}`,
+      );
+    }
+
+    const debugEnabled =
+      String(this.config.get<string>('PASSWORD_RESET_DEBUG_RESPONSE', 'false'))
+        .trim()
+        .toLowerCase() === 'true';
+
+    return {
+      ...input.genericResponse,
+      expiresInSeconds: ttlMinutes * 60,
+      delivery: delivered ? 'EMAIL' : 'LOG',
+      ...(debugEnabled ? { devResetCode: code } : {}),
+    };
+  }
+
   private generateResetCode(): string {
     return String(crypto.randomInt(100000, 1000000));
+  }
+
+  private generateTemporaryPassword(): string {
+    return crypto.randomBytes(24).toString('base64url');
   }
 
   private hashResetCode(code: string): string {
@@ -355,6 +556,63 @@ export class AuthService {
     } catch (error: any) {
       this.logger.error(
         `Envoi email reset échoué (${toEmail}): ${error?.message ?? error}`,
+      );
+      return false;
+    }
+  }
+
+  private async sendInvitationPasswordSetupEmail(
+    toEmail: string,
+    firstName: string,
+    code: string,
+    ttlMinutes: number,
+  ): Promise<boolean> {
+    const host = String(this.config.get<string>('SMTP_HOST', '')).trim();
+    const port = Number(this.config.get<string>('SMTP_PORT', '587'));
+    const secure =
+      String(this.config.get<string>('SMTP_SECURE', 'false'))
+        .trim()
+        .toLowerCase() === 'true';
+    const user = String(this.config.get<string>('SMTP_USER', '')).trim();
+    const pass = String(this.config.get<string>('SMTP_PASS', '')).trim();
+    const from =
+      String(this.config.get<string>('MAIL_FROM', '')).trim() ||
+      'Tingilin <no-reply@tingilin.local>';
+
+    if (!host || !user || !pass) return false;
+
+    try {
+      const transporter = nodemailer.createTransport({
+        host,
+        port,
+        secure,
+        auth: { user, pass },
+      });
+
+      const appName = String(this.config.get<string>('APP_NAME', 'Tingilin'));
+
+      await transporter.sendMail({
+        from,
+        to: toEmail,
+        subject: `${appName} - Invitation de compte`,
+        text: `Bonjour ${firstName || ''}, votre compte a été créé. Utilisez le code ${code} pour définir votre mot de passe. Le code expire dans ${ttlMinutes} minutes.`,
+        html: `
+          <div style="font-family: Arial, sans-serif; line-height:1.5; color:#1f2937;">
+            <h2 style="margin-bottom:8px;">Bienvenue sur ${appName}</h2>
+            <p>Bonjour ${firstName || ''},</p>
+            <p>Un administrateur vient de créer votre compte.</p>
+            <p>Utilisez ce code pour définir votre mot de passe:</p>
+            <p style="font-size:28px; letter-spacing:6px; font-weight:bold; margin:16px 0;">${code}</p>
+            <p>Ce code expire dans <strong>${ttlMinutes} minutes</strong>.</p>
+            <p>Si vous n'êtes pas à l'origine de cette invitation, ignorez ce message.</p>
+          </div>
+        `,
+      });
+
+      return true;
+    } catch (error: any) {
+      this.logger.error(
+        `Envoi email invitation échoué (${toEmail}): ${error?.message ?? error}`,
       );
       return false;
     }

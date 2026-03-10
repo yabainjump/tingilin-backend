@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -7,9 +8,15 @@ import {
   Patch,
   Post,
   Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { mkdirSync } from 'fs';
+import { extname, join } from 'path';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { CreateProductDto } from './dto/create-product.dto';
@@ -35,6 +42,43 @@ export class ProductsAdminController {
   @Post()
   create(@Body() dto: CreateProductDto, @Req() req: any) {
     return this.productsService.create(dto, req.user.sub);
+  }
+
+  @Post('upload-image')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: diskStorage({
+        destination: (_req, _file, cb) => {
+          const destination = join(process.cwd(), 'uploads', 'products');
+          mkdirSync(destination, { recursive: true });
+          cb(null, destination);
+        },
+        filename: (_req, file, cb) => {
+          const safeExt = extname(file.originalname || '').toLowerCase() || '.jpg';
+          const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+          cb(null, `product-${unique}${safeExt}`);
+        },
+      }),
+      limits: { fileSize: 8 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        const mime = String(file.mimetype ?? '').toLowerCase();
+        if (!mime.startsWith('image/')) {
+          cb(new BadRequestException('Only image files are allowed'), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  uploadImage(@UploadedFile() file?: any) {
+    if (!file) {
+      throw new BadRequestException('Image file is required');
+    }
+
+    return {
+      ok: true,
+      imageUrl: `/uploads/products/${file.filename}`,
+    };
   }
 
   @Patch(':id')

@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { RafflesService } from '../raffles/raffles.service';
@@ -18,19 +19,256 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { RaffleStatus } from '../raffles/schemas/raffle.schema';
 import { UsersService } from '../users/users.service';
 import { CreateFreeTicketDto } from './dto/create-free-ticket.dto';
+import { LedgerEntry, LedgerEntryDocument } from './schemas/ledger-entry.schema';
+
+type DashboardGranularity = 'DAY' | 'MONTH' | 'YEAR';
+
+interface DashboardRange {
+  from: Date;
+  to: Date;
+  previousFrom: Date;
+  previousTo: Date;
+  bucketFormat: string;
+  label: string;
+}
+
+interface DashboardKpiSnapshot {
+  ticketsSold: number;
+  cashIn: number;
+  netCashIn: number;
+  transactions: number;
+  successRate: number;
+  averageBasket: number;
+}
 
 @Injectable()
 export class PaymentsService {
+  private readonly analyticsTimezone = 'Africa/Douala';
+
   constructor(
     @InjectModel(Transaction.name)
     private readonly txModel: Model<TransactionDocument>,
+    @InjectModel(LedgerEntry.name)
+    private readonly ledgerModel: Model<LedgerEntryDocument>,
     private readonly rafflesService: RafflesService,
     private readonly ticketsService: TicketsService,
     private readonly participationsService: ParticipationsService,
     private readonly digikuntz: DigikuntzPaymentsService,
     private readonly notifications: NotificationsService,
     private readonly usersService: UsersService,
+    private readonly config: ConfigService,
   ) {}
+
+  private parseDashboardGranularity(raw?: string): DashboardGranularity {
+    const value = String(raw ?? 'DAY').trim().toUpperCase();
+    if (value === 'MONTH') return 'MONTH';
+    if (value === 'YEAR') return 'YEAR';
+    return 'DAY';
+  }
+
+  private buildDashboardRange(granularity: DashboardGranularity): DashboardRange {
+    const now = new Date();
+
+    if (granularity === 'MONTH') {
+      const to = now;
+      const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      from.setUTCMonth(from.getUTCMonth() - 11);
+
+      const previousTo = new Date(from.getTime() - 1);
+      const previousFrom = new Date(from);
+      previousFrom.setUTCMonth(previousFrom.getUTCMonth() - 12);
+
+      return {
+        from,
+        to,
+        previousFrom,
+        previousTo,
+        bucketFormat: '%Y-%m',
+        label: '12 derniers mois',
+      };
+    }
+
+    if (granularity === 'YEAR') {
+      const to = now;
+      const from = new Date(Date.UTC(now.getUTCFullYear() - 4, 0, 1));
+
+      const previousTo = new Date(from.getTime() - 1);
+      const previousFrom = new Date(Date.UTC(from.getUTCFullYear() - 5, 0, 1));
+
+      return {
+        from,
+        to,
+        previousFrom,
+        previousTo,
+        bucketFormat: '%Y',
+        label: '5 dernieres annees',
+      };
+    }
+
+    const days = 30;
+    const to = now;
+    const from = new Date(now);
+    from.setUTCDate(from.getUTCDate() - (days - 1));
+    from.setUTCHours(0, 0, 0, 0);
+
+    const previousTo = new Date(from.getTime() - 1);
+    const previousFrom = new Date(from);
+    previousFrom.setUTCDate(previousFrom.getUTCDate() - days);
+
+    return {
+      from,
+      to,
+      previousFrom,
+      previousTo,
+      bucketFormat: '%Y-%m-%d',
+      label: '30 derniers jours',
+    };
+  }
+
+  private deltaPercent(current: number, previous: number): number {
+    const curr = Number(current ?? 0);
+    const prev = Number(previous ?? 0);
+
+    if (prev === 0) {
+      return curr > 0 ? 100 : 0;
+    }
+
+    return Number((((curr - prev) / prev) * 100).toFixed(1));
+  }
+
+  private rate(success: number, total: number): number {
+    const ok = Number(success ?? 0);
+    const all = Number(total ?? 0);
+    if (all <= 0) return 0;
+    return Number(((ok / all) * 100).toFixed(1));
+  }
+
+  private xafCondition(status: 'SUCCESS' | 'REFUNDED') {
+    return {
+      $and: [
+        { $eq: ['$status', status] },
+        {
+          $in: [
+            { $toUpper: { $ifNull: ['$currency', 'XAF'] } },
+            ['XAF', 'XOF'],
+          ],
+        },
+      ],
+    };
+  }
+
+  private getDatePartsInTimezone(date: Date): {
+    year: string;
+    month: string;
+    day: string;
+  } {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: this.analyticsTimezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const parts = formatter.formatToParts(date);
+
+    const year = parts.find((p) => p.type === 'year')?.value ?? '0000';
+    const month = parts.find((p) => p.type === 'month')?.value ?? '01';
+    const day = parts.find((p) => p.type === 'day')?.value ?? '01';
+
+    return { year, month, day };
+  }
+
+  private toBucketKey(date: Date, granularity: DashboardGranularity): string {
+    const parts = this.getDatePartsInTimezone(date);
+    if (granularity === 'YEAR') {
+      return parts.year;
+    }
+    if (granularity === 'MONTH') {
+      return `${parts.year}-${parts.month}`;
+    }
+    return `${parts.year}-${parts.month}-${parts.day}`;
+  }
+
+  private toBucketLabel(key: string, granularity: DashboardGranularity): string {
+    if (granularity === 'YEAR') {
+      return key;
+    }
+    if (granularity === 'MONTH') {
+      const [year, month] = key.split('-');
+      return `${month}/${year}`;
+    }
+    const [year, month, day] = key.split('-');
+    return `${day}/${month}/${year?.slice(-2)}`;
+  }
+
+  private buildBucketKeys(
+    granularity: DashboardGranularity,
+    from: Date,
+    to: Date,
+  ): string[] {
+    const keys: string[] = [];
+    const cursor = new Date(from);
+
+    while (cursor.getTime() <= to.getTime()) {
+      keys.push(this.toBucketKey(cursor, granularity));
+
+      if (granularity === 'YEAR') {
+        cursor.setUTCFullYear(cursor.getUTCFullYear() + 1);
+      } else if (granularity === 'MONTH') {
+        cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+      } else {
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+      }
+    }
+
+    return Array.from(new Set(keys));
+  }
+
+  private async aggregateDashboardKpis(
+    from: Date,
+    to: Date,
+  ): Promise<DashboardKpiSnapshot> {
+    const [result] = await this.txModel
+      .aggregate([
+        { $match: { createdAt: { $gte: from, $lte: to } } },
+        {
+          $group: {
+            _id: null,
+            transactions: { $sum: 1 },
+            successCount: {
+              $sum: { $cond: [{ $eq: ['$status', 'SUCCESS'] }, 1, 0] },
+            },
+            ticketsSold: {
+              $sum: { $cond: [{ $eq: ['$status', 'SUCCESS'] }, '$quantity', 0] },
+            },
+            cashIn: {
+              $sum: { $cond: [this.xafCondition('SUCCESS'), '$amount', 0] },
+            },
+            refunded: {
+              $sum: { $cond: [this.xafCondition('REFUNDED'), '$amount', 0] },
+            },
+          },
+        },
+      ])
+      .exec();
+
+    const transactions = Number(result?.transactions ?? 0);
+    const successCount = Number(result?.successCount ?? 0);
+    const ticketsSold = Number(result?.ticketsSold ?? 0);
+    const cashIn = Number(result?.cashIn ?? 0);
+    const refunded = Number(result?.refunded ?? 0);
+    const netCashIn = cashIn - refunded;
+    const averageBasket =
+      successCount > 0 ? Number((cashIn / successCount).toFixed(1)) : 0;
+
+    return {
+      ticketsSold,
+      cashIn,
+      netCashIn,
+      transactions,
+      successRate: this.rate(successCount, transactions),
+      averageBasket,
+    };
+  }
 
   private async notifyPaymentFailed(tx: TransactionDocument, reason?: string) {
     const transactionId = tx._id.toString();
@@ -75,146 +313,173 @@ export class PaymentsService {
     }
   }
 
+  private normalizeIdempotencyKey(input?: string): string | null {
+    const value = String(input ?? '').trim();
+    if (!value) return null;
+    return value.toLowerCase();
+  }
+
+  private buildIntentResponse(tx: any, ticketUnitPrice: number, idempotent = false) {
+    return {
+      transactionId: tx._id.toString(),
+      provider: tx.provider,
+      amount: tx.amount,
+      currency: tx.currency,
+      status: tx.status,
+      quantity: Number(tx.quantity ?? 0),
+      ticketUnitPrice,
+      paymentLink: tx.paymentLink ?? undefined,
+      paymentWithTaxes:
+        tx.paymentWithTaxes !== undefined ? Number(tx.paymentWithTaxes) : undefined,
+      idempotent,
+    };
+  }
+
+  private async appendLedgerCashIn(tx: TransactionDocument) {
+    const amount = Number(tx.amount ?? 0);
+    if (amount <= 0) return;
+
+    await this.ledgerModel
+      .updateOne(
+        { transactionId: tx._id, entryType: 'CASH_IN' },
+        {
+          $setOnInsert: {
+            transactionId: tx._id,
+            userId: tx.userId,
+            raffleId: tx.raffleId,
+            entryType: 'CASH_IN',
+            amount,
+            currency: tx.currency ?? 'XAF',
+            provider: tx.provider ?? 'UNKNOWN',
+            providerRef: tx.providerRef ?? '',
+          },
+        },
+        { upsert: true },
+      )
+      .exec();
+  }
+
+  private async finalizeSuccessfulTransaction(tx: TransactionDocument) {
+    await this.ticketsService.createMany({
+      raffleId: tx.raffleId.toString(),
+      userId: tx.userId.toString(),
+      transactionId: tx._id.toString(),
+      quantity: tx.quantity,
+    });
+
+    const part = await this.participationsService.upsertAfterPurchase({
+      raffleId: tx.raffleId.toString(),
+      userId: tx.userId.toString(),
+      quantity: tx.quantity,
+    });
+
+    await this.rafflesService.incrementStats(
+      tx.raffleId.toString(),
+      tx.quantity,
+      part.wasCreated ? 1 : 0,
+    );
+
+    await this.usersService.evaluateMilestones(tx.userId.toString());
+    await this.appendLedgerCashIn(tx);
+  }
+
   async createIntent(userId: string, dto: CreateIntentDto) {
-    try {
-      console.log('[createIntent] dto=', dto, 'userId=', userId);
+    const raffle = await this.rafflesService.adminGetById(dto.raffleId);
+    this.assertRafflePurchasable(raffle);
 
-      const raffle = await this.rafflesService.adminGetById(dto.raffleId);
-      console.log(
-        '[createIntent] raffle.status=',
-        raffle?.status,
-        'ticketPrice=',
-        raffle?.ticketPrice,
-      );
-
-      this.assertRafflePurchasable(raffle);
-
-      const unit = Number(raffle.ticketPrice);
-      if (!Number.isFinite(unit) || unit <= 0) {
-        throw new BadRequestException('Invalid ticket price');
-      }
-
-      const amount = Number(dto.amount);
-      if (!Number.isFinite(amount) || amount <= 0) {
-        throw new BadRequestException('Invalid amount');
-      }
-
-      if (amount % unit !== 0) {
-        throw new BadRequestException(`Amount must be a multiple of ${unit}`);
-      }
-
-      const quantity = amount / unit;
-
-      const participation = await this.participationsService.getOrCreate(
-        dto.raffleId,
-        userId,
-      );
-      console.log('[createIntent] participation=', {
-        totalTicketsBought: participation?.totalTicketsBought,
-        blockedUntil: participation?.blockedUntil,
-      });
-
-      const blockedUntil =
-        participation?.blockedUntil instanceof Date
-          ? participation.blockedUntil
-          : null;
-      if (blockedUntil && blockedUntil.getTime() > Date.now()) {
-        throw new BadRequestException(
-          'Temporarily blocked due to failed payments',
-        );
-      }
-
-      const already =
-        typeof participation?.totalTicketsBought === 'number'
-          ? participation.totalTicketsBought
-          : 0;
-
-      const MAX = 200;
-      if (already + quantity > MAX) {
-        throw new BadRequestException(
-          `Ticket limit reached for this raffle (max ${MAX})`,
-        );
-      }
-
-      const tx = await this.txModel.create({
-        userId: new Types.ObjectId(userId),
-        raffleId: new Types.ObjectId(dto.raffleId),
-        quantity,
-        amount,
-        currency: raffle.currency ?? 'XAF',
-        provider: dto.provider ?? 'MOCK',
-        status: 'PENDING',
-      });
-
-      const provider = dto.provider ?? 'MOCK';
-
-      if (provider === 'DIGIKUNTZ') {
-        if (
-          !dto.userEmail ||
-          !dto.userPhone ||
-          !dto.userCountry ||
-          !dto.senderName
-        ) {
-          throw new BadRequestException(
-            'DIGIKUNTZ requires userEmail, userPhone, userCountry, senderName',
-          );
-        }
-
-        const payin = await this.digikuntz.createPayin({
-          amount: dto.amount,
-          reason: `TINGILIN|${tx._id.toString()}|${dto.raffleId}|${userId}|qty:${quantity}`,
-          userEmail: dto.userEmail,
-          userPhone: dto.userPhone,
-          userCountry: dto.userCountry,
-          senderName: dto.senderName,
-        });
-
-        tx.provider = 'DIGIKUNTZ';
-        tx.providerTransactionId = payin.id;
-        tx.providerRef = payin.transactionRef;
-        tx.paymentLink = payin.paymentLink;
-        tx.paymentWithTaxes = Number(payin.paymentWithTaxes ?? 0);
-        tx.rawProviderStatus = payin.status;
-        await tx.save();
-
-        return {
-          transactionId: tx._id.toString(),
-          provider: tx.provider,
-          amount: tx.amount,
-          currency: tx.currency,
-          status: tx.status,
-          quantity,
-          ticketUnitPrice: unit,
-          paymentLink: tx.paymentLink,
-          paymentWithTaxes: tx.paymentWithTaxes,
-        };
-      }
-
-      return {
-        transactionId: tx._id.toString(),
-        provider: tx.provider,
-        amount: tx.amount,
-        currency: tx.currency,
-        status: tx.status,
-        quantity,
-        ticketUnitPrice: unit,
-      };
-
-      console.log('[createIntent] tx created=', tx._id.toString());
-
-      return {
-        transactionId: tx._id.toString(),
-        provider: tx.provider,
-        amount: tx.amount,
-        currency: tx.currency,
-        status: tx.status,
-        quantity,
-        ticketUnitPrice: unit,
-      };
-    } catch (err) {
-      console.error('[createIntent] ERROR:', err);
-      throw err;
+    const unit = Number(raffle.ticketPrice);
+    if (!Number.isFinite(unit) || unit <= 0) {
+      throw new BadRequestException('Invalid ticket price');
     }
+
+    const amount = Number(dto.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new BadRequestException('Invalid amount');
+    }
+    if (amount % unit !== 0) {
+      throw new BadRequestException(`Amount must be a multiple of ${unit}`);
+    }
+    const quantity = amount / unit;
+    const provider = dto.provider ?? 'MOCK';
+
+    if (provider === 'DIGIKUNTZ') {
+      if (!dto.userEmail || !dto.userPhone || !dto.userCountry || !dto.senderName) {
+        throw new BadRequestException(
+          'DIGIKUNTZ requires userEmail, userPhone, userCountry, senderName',
+        );
+      }
+    }
+
+    const idempotencyKey = this.normalizeIdempotencyKey(dto.idempotencyKey);
+    if (idempotencyKey) {
+      const existing = await this.txModel
+        .findOne({
+          userId: new Types.ObjectId(userId),
+          idempotencyKey,
+        })
+        .sort({ createdAt: -1 })
+        .exec();
+      if (existing) {
+        return this.buildIntentResponse(existing, unit, true);
+      }
+    }
+
+    const participation = await this.participationsService.getOrCreate(
+      dto.raffleId,
+      userId,
+    );
+
+    const blockedUntil =
+      participation?.blockedUntil instanceof Date
+        ? participation.blockedUntil
+        : null;
+    if (blockedUntil && blockedUntil.getTime() > Date.now()) {
+      throw new BadRequestException('Temporarily blocked due to failed payments');
+    }
+
+    const already =
+      typeof participation?.totalTicketsBought === 'number'
+        ? participation.totalTicketsBought
+        : 0;
+
+    const MAX = 200;
+    if (already + quantity > MAX) {
+      throw new BadRequestException(
+        `Ticket limit reached for this raffle (max ${MAX})`,
+      );
+    }
+
+    const tx = await this.txModel.create({
+      userId: new Types.ObjectId(userId),
+      raffleId: new Types.ObjectId(dto.raffleId),
+      quantity,
+      amount,
+      currency: raffle.currency ?? 'XAF',
+      provider,
+      status: 'PENDING',
+      idempotencyKey: idempotencyKey ?? undefined,
+    });
+
+    if (provider === 'DIGIKUNTZ') {
+      const payin = await this.digikuntz.createPayin({
+        amount: dto.amount,
+        reason: `TINGILIN|${tx._id.toString()}|${dto.raffleId}|${userId}|qty:${quantity}`,
+        userEmail: dto.userEmail!,
+        userPhone: dto.userPhone!,
+        userCountry: dto.userCountry!,
+        senderName: dto.senderName!,
+      });
+
+      tx.provider = 'DIGIKUNTZ';
+      tx.providerTransactionId = payin.id;
+      tx.providerRef = payin.transactionRef;
+      tx.paymentLink = payin.paymentLink;
+      tx.paymentWithTaxes = Number(payin.paymentWithTaxes ?? 0);
+      tx.rawProviderStatus = payin.status;
+      await tx.save();
+    }
+
+    return this.buildIntentResponse(tx, unit);
   }
 
   async mockConfirm(userId: string, dto: MockConfirmDto) {
@@ -239,14 +504,6 @@ export class PaymentsService {
     partReset.failedAttempts = 0;
     partReset.blockedUntil = undefined;
     await partReset.save();
-
-    const parts = await this.participationsService.getOrCreate(
-      tx.raffleId.toString(),
-      userId,
-    );
-    parts.failedAttempts = 0;
-    parts.blockedUntil = undefined;
-    await parts.save();
 
     if (tx.status !== 'PENDING')
       throw new BadRequestException('Transaction not pending');
@@ -278,29 +535,638 @@ export class PaymentsService {
         `Ticket limit reached for this raffle (max ${MAX})`,
       );
     }
-
-    await this.ticketsService.createMany({
-      raffleId: tx.raffleId.toString(),
-      userId: tx.userId.toString(),
-      transactionId: tx._id.toString(),
-      quantity: tx.quantity,
-    });
-
-    const part = await this.participationsService.upsertAfterPurchase({
-      raffleId: tx.raffleId.toString(),
-      userId: tx.userId.toString(),
-      quantity: tx.quantity,
-    });
-
-    await this.rafflesService.incrementStats(
-      tx.raffleId.toString(),
-      tx.quantity,
-      part.wasCreated ? 1 : 0,
-    );
-
-    await this.usersService.evaluateMilestones(tx.userId.toString());
+    await this.finalizeSuccessfulTransaction(tx);
 
     return { ok: true, transactionId: tx._id.toString(), status: tx.status };
+  }
+
+  async adminSummary() {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [allTx, monthTx, ledgerRows, monthLedgerRows] = await Promise.all([
+      this.txModel.find().lean().exec(),
+      this.txModel.find({ createdAt: { $gte: monthStart } }).lean().exec(),
+      this.ledgerModel
+        .find({
+          entryType: 'CASH_IN',
+          currency: { $in: ['XAF', 'xof', 'XOF', 'xaf'] },
+        })
+        .lean()
+        .exec(),
+      this.ledgerModel
+        .find({
+          entryType: 'CASH_IN',
+          currency: { $in: ['XAF', 'xof', 'XOF', 'xaf'] },
+          createdAt: { $gte: monthStart },
+        })
+        .lean()
+        .exec(),
+    ]);
+
+    const successTx = allTx.filter((tx: any) => tx.status === 'SUCCESS');
+    const successTxXaf = successTx.filter(
+      (tx: any) => String(tx.currency ?? 'XAF').toUpperCase() === 'XAF',
+    );
+    const monthlySuccessXaf = monthTx.filter(
+      (tx: any) =>
+        tx.status === 'SUCCESS' &&
+        String(tx.currency ?? 'XAF').toUpperCase() === 'XAF',
+    );
+
+    const byProvider: Record<string, number> = {};
+    const providerSource = ledgerRows.length > 0 ? ledgerRows : successTxXaf;
+    for (const row of providerSource) {
+      const provider = String((row as any).provider ?? 'UNKNOWN').toUpperCase();
+      byProvider[provider] = (byProvider[provider] ?? 0) + Number((row as any).amount ?? 0);
+    }
+
+    const pendingCount = allTx.filter((tx: any) => tx.status === 'PENDING').length;
+    const failedCount = allTx.filter((tx: any) => tx.status === 'FAILED').length;
+    const pendingPayoutsXaf = allTx
+      .filter(
+        (tx: any) =>
+          tx.status === 'PENDING' &&
+          String(tx.currency ?? 'XAF').toUpperCase() === 'XAF',
+      )
+      .reduce((sum: number, tx: any) => sum + Number(tx.amount ?? 0), 0);
+
+    const successCount = successTx.length;
+    const successRateBase = successCount + pendingCount + failedCount;
+    const successRate =
+      successRateBase > 0
+        ? Number(((successCount / successRateBase) * 100).toFixed(1))
+        : 0;
+
+    return {
+      currency: 'XAF',
+      totalCashInXaf:
+        ledgerRows.length > 0
+          ? ledgerRows.reduce((sum: number, row: any) => sum + Number(row.amount ?? 0), 0)
+          : successTxXaf.reduce((sum: number, tx: any) => sum + Number(tx.amount ?? 0), 0),
+      monthCashInXaf:
+        monthLedgerRows.length > 0
+          ? monthLedgerRows.reduce((sum: number, row: any) => sum + Number(row.amount ?? 0), 0)
+          : monthlySuccessXaf.reduce((sum: number, tx: any) => sum + Number(tx.amount ?? 0), 0),
+      successCount,
+      pendingCount,
+      failedCount,
+      pendingPayoutsXaf,
+      successRate,
+      byProvider,
+    };
+  }
+
+  async adminDashboardAnalytics(params?: {
+    granularity?: string;
+  }) {
+    const granularity = this.parseDashboardGranularity(params?.granularity);
+    const range = this.buildDashboardRange(granularity);
+
+    const [currentKpis, previousKpis, seriesRows, providerRows, topRafflesRaw, recent] =
+      await Promise.all([
+        this.aggregateDashboardKpis(range.from, range.to),
+        this.aggregateDashboardKpis(range.previousFrom, range.previousTo),
+        this.txModel
+          .aggregate([
+            { $match: { createdAt: { $gte: range.from, $lte: range.to } } },
+            {
+              $group: {
+                _id: {
+                  $dateToString: {
+                    format: range.bucketFormat,
+                    date: '$createdAt',
+                    timezone: this.analyticsTimezone,
+                  },
+                },
+                transactions: { $sum: 1 },
+                successTransactions: {
+                  $sum: { $cond: [{ $eq: ['$status', 'SUCCESS'] }, 1, 0] },
+                },
+                ticketsSold: {
+                  $sum: {
+                    $cond: [{ $eq: ['$status', 'SUCCESS'] }, '$quantity', 0],
+                  },
+                },
+                cashIn: {
+                  $sum: {
+                    $cond: [this.xafCondition('SUCCESS'), '$amount', 0],
+                  },
+                },
+                refunded: {
+                  $sum: {
+                    $cond: [this.xafCondition('REFUNDED'), '$amount', 0],
+                  },
+                },
+              },
+            },
+            { $sort: { _id: 1 } },
+          ])
+          .exec(),
+        this.txModel
+          .aggregate([
+            {
+              $match: {
+                createdAt: { $gte: range.from, $lte: range.to },
+                status: 'SUCCESS',
+              },
+            },
+            {
+              $match: {
+                $expr: {
+                  $in: [
+                    { $toUpper: { $ifNull: ['$currency', 'XAF'] } },
+                    ['XAF', 'XOF'],
+                  ],
+                },
+              },
+            },
+            {
+              $group: {
+                _id: { $toUpper: { $ifNull: ['$provider', 'UNKNOWN'] } },
+                cashIn: { $sum: '$amount' },
+                ticketsSold: { $sum: '$quantity' },
+                transactions: { $sum: 1 },
+              },
+            },
+            { $sort: { cashIn: -1 } },
+          ])
+          .exec(),
+        this.txModel
+          .aggregate([
+            {
+              $match: {
+                createdAt: { $gte: range.from, $lte: range.to },
+                status: 'SUCCESS',
+              },
+            },
+            {
+              $lookup: {
+                from: 'raffles',
+                localField: 'raffleId',
+                foreignField: '_id',
+                as: 'raffle',
+              },
+            },
+            { $unwind: { path: '$raffle', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'products',
+                localField: 'raffle.productId',
+                foreignField: '_id',
+                as: 'product',
+              },
+            },
+            { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+            {
+              $group: {
+                _id: '$raffleId',
+                title: { $first: '$product.title' },
+                status: { $first: '$raffle.status' },
+                ticketsSold: { $sum: '$quantity' },
+                cashIn: {
+                  $sum: {
+                    $cond: [this.xafCondition('SUCCESS'), '$amount', 0],
+                  },
+                },
+                participantsSet: { $addToSet: '$userId' },
+              },
+            },
+            {
+              $project: {
+                _id: 0,
+                raffleId: { $toString: '$_id' },
+                title: { $ifNull: ['$title', 'Raffle'] },
+                status: { $ifNull: ['$status', 'UNKNOWN'] },
+                ticketsSold: 1,
+                cashIn: 1,
+                participants: { $size: '$participantsSet' },
+              },
+            },
+            { $sort: { cashIn: -1, ticketsSold: -1 } },
+            { $limit: 6 },
+          ])
+          .exec(),
+        this.adminTransactions({
+          page: 1,
+          limit: 6,
+          status: 'ALL',
+          dateFrom: range.from.toISOString(),
+          dateTo: range.to.toISOString(),
+        }),
+      ]);
+
+    const seriesMap = new Map<string, any>(
+      (seriesRows ?? []).map((row: any) => [String(row?._id ?? ''), row]),
+    );
+    const keys = this.buildBucketKeys(granularity, range.from, range.to);
+
+    const series = keys.map((key) => {
+      const row: any = seriesMap.get(key) ?? {};
+      const transactions = Number(row?.transactions ?? 0);
+      const successTransactions = Number(row?.successTransactions ?? 0);
+      const cashIn = Number(row?.cashIn ?? 0);
+      const refunded = Number(row?.refunded ?? 0);
+
+      return {
+        bucket: key,
+        label: this.toBucketLabel(key, granularity),
+        ticketsSold: Number(row?.ticketsSold ?? 0),
+        cashIn,
+        netCashIn: cashIn - refunded,
+        transactions,
+        successRate: this.rate(successTransactions, transactions),
+      };
+    });
+
+    const byProvider = (providerRows ?? []).map((row: any) => ({
+      provider: String(row?._id ?? 'UNKNOWN'),
+      cashIn: Number(row?.cashIn ?? 0),
+      ticketsSold: Number(row?.ticketsSold ?? 0),
+      transactions: Number(row?.transactions ?? 0),
+    }));
+
+    const topRaffles = (topRafflesRaw ?? []).map((row: any) => ({
+      raffleId: String(row?.raffleId ?? ''),
+      title: String(row?.title ?? 'Raffle'),
+      status: String(row?.status ?? 'UNKNOWN'),
+      ticketsSold: Number(row?.ticketsSold ?? 0),
+      cashIn: Number(row?.cashIn ?? 0),
+      participants: Number(row?.participants ?? 0),
+    }));
+
+    return {
+      granularity,
+      timezone: this.analyticsTimezone,
+      currency: 'XAF',
+      range: {
+        label: range.label,
+        dateFrom: range.from.toISOString(),
+        dateTo: range.to.toISOString(),
+      },
+      kpis: {
+        ticketsSold: currentKpis.ticketsSold,
+        ticketsSoldDeltaPct: this.deltaPercent(
+          currentKpis.ticketsSold,
+          previousKpis.ticketsSold,
+        ),
+        cashIn: currentKpis.cashIn,
+        cashInDeltaPct: this.deltaPercent(currentKpis.cashIn, previousKpis.cashIn),
+        netCashIn: currentKpis.netCashIn,
+        netCashInDeltaPct: this.deltaPercent(
+          currentKpis.netCashIn,
+          previousKpis.netCashIn,
+        ),
+        transactions: currentKpis.transactions,
+        transactionsDeltaPct: this.deltaPercent(
+          currentKpis.transactions,
+          previousKpis.transactions,
+        ),
+        successRate: currentKpis.successRate,
+        successRateDeltaPct: this.deltaPercent(
+          currentKpis.successRate,
+          previousKpis.successRate,
+        ),
+        averageBasket: currentKpis.averageBasket,
+        averageBasketDeltaPct: this.deltaPercent(
+          currentKpis.averageBasket,
+          previousKpis.averageBasket,
+        ),
+      },
+      series,
+      byProvider,
+      topRaffles,
+      recentTransactions: recent?.data ?? [],
+    };
+  }
+
+  async adminReconciliation(params?: { dateFrom?: string; dateTo?: string }) {
+    const dateFromRaw = String(params?.dateFrom ?? '').trim();
+    const dateToRaw = String(params?.dateTo ?? '').trim();
+
+    const txMatch: Record<string, any> = {
+      currency: { $in: ['XAF', 'XOF', 'xaf', 'xof'] },
+      amount: { $gt: 0 },
+    };
+    const ledgerMatch: Record<string, any> = {
+      currency: { $in: ['XAF', 'XOF', 'xaf', 'xof'] },
+      entryType: 'CASH_IN',
+    };
+
+    if (dateFromRaw || dateToRaw) {
+      const createdAt: Record<string, Date> = {};
+      if (dateFromRaw) {
+        const dateFrom = new Date(dateFromRaw);
+        if (Number.isNaN(dateFrom.getTime())) {
+          throw new BadRequestException('Invalid dateFrom');
+        }
+        createdAt.$gte = dateFrom;
+      }
+      if (dateToRaw) {
+        const dateTo = new Date(dateToRaw);
+        if (Number.isNaN(dateTo.getTime())) {
+          throw new BadRequestException('Invalid dateTo');
+        }
+        createdAt.$lte = dateTo;
+      }
+      txMatch.createdAt = createdAt;
+      ledgerMatch.createdAt = createdAt;
+    }
+
+    const [txRows, ledgerRows] = await Promise.all([
+      this.txModel
+        .find(txMatch)
+        .select('amount provider status')
+        .lean()
+        .exec(),
+      this.ledgerModel
+        .find(ledgerMatch)
+        .select('amount provider createdAt')
+        .lean()
+        .exec(),
+    ]);
+
+    const intentsAmountXaf = txRows.reduce(
+      (sum: number, row: any) => sum + Number(row.amount ?? 0),
+      0,
+    );
+    const confirmedCashInXaf = ledgerRows.reduce(
+      (sum: number, row: any) => sum + Number(row.amount ?? 0),
+      0,
+    );
+    const pendingAmountXaf = txRows
+      .filter((row: any) => row.status === 'PENDING')
+      .reduce((sum: number, row: any) => sum + Number(row.amount ?? 0), 0);
+    const failedAmountXaf = txRows
+      .filter((row: any) => row.status === 'FAILED')
+      .reduce((sum: number, row: any) => sum + Number(row.amount ?? 0), 0);
+
+    const byProvider: Record<
+      string,
+      { intentsXaf: number; confirmedXaf: number; pendingXaf: number; failedXaf: number }
+    > = {};
+
+    for (const tx of txRows) {
+      const provider = String((tx as any).provider ?? 'UNKNOWN').toUpperCase();
+      byProvider[provider] = byProvider[provider] ?? {
+        intentsXaf: 0,
+        confirmedXaf: 0,
+        pendingXaf: 0,
+        failedXaf: 0,
+      };
+      byProvider[provider].intentsXaf += Number((tx as any).amount ?? 0);
+      if ((tx as any).status === 'PENDING') {
+        byProvider[provider].pendingXaf += Number((tx as any).amount ?? 0);
+      }
+      if ((tx as any).status === 'FAILED') {
+        byProvider[provider].failedXaf += Number((tx as any).amount ?? 0);
+      }
+    }
+
+    for (const entry of ledgerRows) {
+      const provider = String((entry as any).provider ?? 'UNKNOWN').toUpperCase();
+      byProvider[provider] = byProvider[provider] ?? {
+        intentsXaf: 0,
+        confirmedXaf: 0,
+        pendingXaf: 0,
+        failedXaf: 0,
+      };
+      byProvider[provider].confirmedXaf += Number((entry as any).amount ?? 0);
+    }
+
+    return {
+      currency: 'XAF',
+      range: {
+        dateFrom: dateFromRaw || null,
+        dateTo: dateToRaw || null,
+      },
+      intentsAmountXaf,
+      confirmedCashInXaf,
+      pendingAmountXaf,
+      failedAmountXaf,
+      reconciliationGapXaf: intentsAmountXaf - confirmedCashInXaf,
+      byProvider,
+    };
+  }
+
+  async adminTransactions(params?: {
+    page?: number;
+    limit?: number;
+    status?: 'ALL' | 'PENDING' | 'SUCCESS' | 'FAILED' | 'REFUNDED';
+    provider?: string;
+    search?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    maxLimit?: number;
+  }) {
+    const page = Math.max(1, Number(params?.page ?? 1) || 1);
+    const maxLimit = Math.max(1, Number(params?.maxLimit ?? 100) || 100);
+    const limit = Math.min(maxLimit, Math.max(1, Number(params?.limit ?? 20) || 20));
+    const skip = (page - 1) * limit;
+    const status = String(params?.status ?? 'ALL').toUpperCase();
+    const provider = String(params?.provider ?? '').trim().toUpperCase();
+    const search = String(params?.search ?? '').trim();
+    const dateFromRaw = String(params?.dateFrom ?? '').trim();
+    const dateToRaw = String(params?.dateTo ?? '').trim();
+
+    const match: Record<string, any> = {};
+    if (status !== 'ALL') {
+      match.status = status;
+    }
+    if (provider && provider !== 'ALL') {
+      match.provider = provider;
+    }
+    if (dateFromRaw || dateToRaw) {
+      const createdAt: Record<string, Date> = {};
+
+      if (dateFromRaw) {
+        const dateFrom = new Date(dateFromRaw);
+        if (Number.isNaN(dateFrom.getTime())) {
+          throw new BadRequestException('Invalid dateFrom');
+        }
+        createdAt.$gte = dateFrom;
+      }
+
+      if (dateToRaw) {
+        const dateTo = new Date(dateToRaw);
+        if (Number.isNaN(dateTo.getTime())) {
+          throw new BadRequestException('Invalid dateTo');
+        }
+        createdAt.$lte = dateTo;
+      }
+
+      match.createdAt = createdAt;
+    }
+
+    const pipeline: any[] = [
+      { $match: match },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'userId',
+          foreignField: '_id',
+          as: 'user',
+        },
+      },
+      { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'raffles',
+          localField: 'raffleId',
+          foreignField: '_id',
+          as: 'raffle',
+        },
+      },
+      { $unwind: { path: '$raffle', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'products',
+          localField: 'raffle.productId',
+          foreignField: '_id',
+          as: 'product',
+        },
+      },
+      { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+    ];
+
+    if (search) {
+      pipeline.push({
+        $match: {
+          $or: [
+            { 'user.email': { $regex: search, $options: 'i' } },
+            { 'user.firstName': { $regex: search, $options: 'i' } },
+            { 'user.lastName': { $regex: search, $options: 'i' } },
+            { 'product.title': { $regex: search, $options: 'i' } },
+            { providerRef: { $regex: search, $options: 'i' } },
+          ],
+        },
+      });
+    }
+
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const rowsPipeline = [
+      ...pipeline,
+      { $sort: { createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      {
+        $project: {
+          id: { $toString: '$_id' },
+          amount: '$amount',
+          currency: '$currency',
+          quantity: '$quantity',
+          provider: '$provider',
+          status: '$status',
+          providerRef: '$providerRef',
+          createdAt: '$createdAt',
+          confirmedAt: '$confirmedAt',
+          user: {
+            id: { $toString: '$user._id' },
+            email: '$user.email',
+            firstName: '$user.firstName',
+            lastName: '$user.lastName',
+            avatar: '$user.avatar',
+          },
+          raffle: {
+            id: { $toString: '$raffle._id' },
+            status: '$raffle.status',
+          },
+          product: {
+            title: '$product.title',
+            imageUrl: '$product.imageUrl',
+          },
+        },
+      },
+    ];
+
+    const [countResult, rows] = await Promise.all([
+      this.txModel.aggregate(countPipeline).exec(),
+      this.txModel.aggregate(rowsPipeline).exec(),
+    ]);
+
+    const total = Number(countResult?.[0]?.total ?? 0);
+    return {
+      data: rows,
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    };
+  }
+
+  async adminExportTransactionsCsv(params?: {
+    status?: 'ALL' | 'PENDING' | 'SUCCESS' | 'FAILED' | 'REFUNDED';
+    provider?: string;
+    search?: string;
+    dateFrom?: string;
+    dateTo?: string;
+  }) {
+    const batchSize = 1000;
+    const first = await this.adminTransactions({
+      ...params,
+      page: 1,
+      limit: batchSize,
+      maxLimit: batchSize,
+    });
+
+    const rows: any[] = [...first.data];
+    for (let page = 2; page <= first.totalPages; page++) {
+      const chunk = await this.adminTransactions({
+        ...params,
+        page,
+        limit: batchSize,
+        maxLimit: batchSize,
+      });
+      rows.push(...chunk.data);
+    }
+
+    const header = [
+      'transaction_id',
+      'created_at',
+      'confirmed_at',
+      'status',
+      'provider',
+      'provider_ref',
+      'amount',
+      'currency',
+      'quantity',
+      'customer_email',
+      'customer_name',
+      'raffle_id',
+      'raffle_status',
+      'product_title',
+    ];
+
+    const lines = rows.map((row: any) =>
+      [
+        row?.id,
+        row?.createdAt,
+        row?.confirmedAt,
+        row?.status,
+        row?.provider,
+        row?.providerRef,
+        row?.amount,
+        row?.currency,
+        row?.quantity,
+        row?.user?.email,
+        `${String(row?.user?.firstName ?? '').trim()} ${String(row?.user?.lastName ?? '').trim()}`.trim(),
+        row?.raffle?.id,
+        row?.raffle?.status,
+        row?.product?.title,
+      ]
+        .map((value) => this.escapeCsvValue(value))
+        .join(','),
+    );
+
+    return [header.join(','), ...lines].join('\n');
+  }
+
+  private escapeCsvValue(value: unknown): string {
+    const raw = String(value ?? '');
+    if (!/[",\n\r]/.test(raw)) {
+      return raw;
+    }
+    return `"${raw.replace(/"/g, '""')}"`;
   }
 
   private async bumpRaffleStats(
@@ -482,27 +1348,7 @@ export class PaymentsService {
       tx.status = 'SUCCESS';
       tx.confirmedAt = new Date();
       await tx.save();
-
-      await this.ticketsService.createMany({
-        raffleId: tx.raffleId.toString(),
-        userId: tx.userId.toString(),
-        transactionId: tx._id.toString(),
-        quantity: tx.quantity,
-      });
-
-      const part = await this.participationsService.upsertAfterPurchase({
-        raffleId: tx.raffleId.toString(),
-        userId: tx.userId.toString(),
-        quantity: tx.quantity,
-      });
-
-      await this.rafflesService.incrementStats(
-        tx.raffleId.toString(),
-        tx.quantity,
-        part.wasCreated ? 1 : 0,
-      );
-
-      await this.usersService.evaluateMilestones(tx.userId.toString());
+      await this.finalizeSuccessfulTransaction(tx);
 
       await this.notifications.create({
         userId: tx.userId.toString(),
@@ -535,5 +1381,127 @@ export class PaymentsService {
 
     await tx.save();
     return { ok: true, status: tx.status, remoteStatus };
+  }
+
+  async processDigikuntzWebhook(
+    payload: {
+      transactionId?: string;
+      providerTransactionId?: string;
+      providerRef?: string;
+      status?: string;
+      failReason?: string;
+    },
+    signature?: string,
+  ) {
+    const secret = String(this.config.get<string>('DIGIKUNTZ_WEBHOOK_SECRET', '')).trim();
+    if (secret && String(signature ?? '').trim() !== secret) {
+      throw new BadRequestException('Invalid webhook signature');
+    }
+
+    const transactionId = String(payload?.transactionId ?? '').trim();
+    const providerTransactionId = String(payload?.providerTransactionId ?? '').trim();
+    const providerRef = String(payload?.providerRef ?? '').trim();
+
+    let tx: TransactionDocument | null = null;
+    if (transactionId && Types.ObjectId.isValid(transactionId)) {
+      tx = await this.txModel.findById(transactionId).exec();
+    }
+    if (!tx && providerTransactionId) {
+      tx = await this.txModel
+        .findOne({ provider: 'DIGIKUNTZ', providerTransactionId })
+        .exec();
+    }
+    if (!tx && providerRef) {
+      tx = await this.txModel.findOne({ provider: 'DIGIKUNTZ', providerRef }).exec();
+    }
+
+    if (!tx) {
+      return { ok: true, ignored: true, reason: 'UNKNOWN_TRANSACTION' };
+    }
+
+    const remoteStatus = String(payload?.status ?? '').trim().toLowerCase();
+    if (!remoteStatus) {
+      throw new BadRequestException('Missing status');
+    }
+
+    tx.rawProviderStatus = remoteStatus;
+    if (providerRef && !tx.providerRef) {
+      tx.providerRef = providerRef;
+    }
+
+    if (tx.status === 'SUCCESS') {
+      await tx.save();
+      return {
+        ok: true,
+        idempotent: true,
+        transactionId: tx._id.toString(),
+        status: tx.status,
+      };
+    }
+
+    if (remoteStatus === 'pending') {
+      await tx.save();
+      return { ok: true, transactionId: tx._id.toString(), status: tx.status };
+    }
+
+    if (remoteStatus === 'success' || remoteStatus === 'completed') {
+      if (tx.status !== 'PENDING') {
+        await tx.save();
+        return {
+          ok: true,
+          idempotent: true,
+          transactionId: tx._id.toString(),
+          status: tx.status,
+        };
+      }
+
+      const partBefore = await this.participationsService.getOrCreate(
+        tx.raffleId.toString(),
+        tx.userId.toString(),
+      );
+      const already =
+        typeof partBefore.totalTicketsBought === 'number'
+          ? partBefore.totalTicketsBought
+          : 0;
+      const MAX = 200;
+      if (already + tx.quantity > MAX) {
+        throw new BadRequestException(
+          `Ticket limit reached for this raffle (max ${MAX})`,
+        );
+      }
+
+      tx.status = 'SUCCESS';
+      tx.confirmedAt = new Date();
+      await tx.save();
+      await this.finalizeSuccessfulTransaction(tx);
+
+      return { ok: true, transactionId: tx._id.toString(), status: tx.status };
+    }
+
+    if (
+      remoteStatus === 'failed' ||
+      remoteStatus === 'closed' ||
+      remoteStatus === 'error' ||
+      remoteStatus.includes('error')
+    ) {
+      if (tx.status === 'FAILED') {
+        await tx.save();
+        return {
+          ok: true,
+          idempotent: true,
+          transactionId: tx._id.toString(),
+          status: tx.status,
+        };
+      }
+      tx.status = 'FAILED';
+      tx.failReason = String(payload?.failReason ?? `provider:${remoteStatus}`).trim();
+      tx.failedAt = new Date();
+      await tx.save();
+      await this.notifyPaymentFailed(tx, tx.failReason);
+      return { ok: true, transactionId: tx._id.toString(), status: tx.status };
+    }
+
+    await tx.save();
+    return { ok: true, transactionId: tx._id.toString(), status: tx.status };
   }
 }

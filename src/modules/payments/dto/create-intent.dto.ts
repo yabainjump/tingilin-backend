@@ -4,6 +4,7 @@ import {
   IsMongoId,
   IsOptional,
   IsString,
+  MaxLength,
   Min,
 } from 'class-validator';
 
@@ -23,4 +24,9 @@ export class CreateIntentDto {
   @IsOptional() @IsString() userPhone?: string;
   @IsOptional() @IsString() userCountry?: string;
   @IsOptional() @IsString() senderName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  idempotencyKey?: string;
 }

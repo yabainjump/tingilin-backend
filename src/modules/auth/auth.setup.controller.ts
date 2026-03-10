@@ -11,6 +11,15 @@ export class AuthSetupController {
 
   @Post('promote-admin')
   async promoteAdmin(@Body() body: { setupKey: string; email: string }) {
+    const setupEnabled =
+      String(this.config.get<string>('SETUP_ENABLED', 'false'))
+        .trim()
+        .toLowerCase() === 'true';
+
+    if (!setupEnabled) {
+      return { ok: false, message: 'Setup endpoint disabled' };
+    }
+
     const expected = this.config.get<string>('SETUP_KEY');
     if (!expected || body.setupKey !== expected) {
       return { ok: false, message: 'Invalid setup key' };

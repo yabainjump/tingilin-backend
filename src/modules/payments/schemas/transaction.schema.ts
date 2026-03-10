@@ -27,6 +27,9 @@ export class Transaction {
   @Prop({ type: String, required: false, default: undefined })
   providerRef: string;
 
+  @Prop({ type: String, required: false, default: undefined })
+  idempotencyKey?: string;
+
   @Prop({ type: String, required: false })
   failReason?: string;
 
@@ -55,5 +58,10 @@ export class Transaction {
 export const TransactionSchema = SchemaFactory.createForClass(Transaction);
 TransactionSchema.index(
   { provider: 1, providerTransactionId: 1 },
+  { unique: true, sparse: true },
+);
+TransactionSchema.index({ provider: 1, providerRef: 1 }, { unique: true, sparse: true });
+TransactionSchema.index(
+  { userId: 1, idempotencyKey: 1 },
   { unique: true, sparse: true },
 );

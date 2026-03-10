@@ -20,6 +20,9 @@ export class User {
   @Prop({ required: true, unique: true, lowercase: true, trim: true })
   email: string;
 
+  @Prop({ type: String, trim: true, lowercase: true, default: '' })
+  username?: string;
+
   @Prop({ required: true })
   passwordHash: string;
 
@@ -94,6 +97,15 @@ export class User {
 
   @Prop({ type: Number, default: 0 })
   passwordResetAttempts?: number;
+
+  @Prop({ type: Number, default: 0 })
+  failedLoginAttempts?: number;
+
+  @Prop({ type: Date, default: null })
+  loginBlockedUntil?: Date | null;
+
+  @Prop({ type: Date, default: null })
+  lastLoginAt?: Date | null;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

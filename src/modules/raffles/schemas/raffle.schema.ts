@@ -9,11 +9,20 @@ export enum RaffleStatus {
   DRAWN = 'DRAWN',
 }
 
+export enum WinnerFulfillmentStatus {
+  PENDING_VERIFICATION = 'PENDING_VERIFICATION',
+  VERIFIED = 'VERIFIED',
+  IN_SHIPPING = 'IN_SHIPPING',
+  DELIVERED = 'DELIVERED',
+}
+
 export class RaffleWinner {
   userId!: Types.ObjectId;
   ticketId!: Types.ObjectId;
   drawnAt!: Date;
   isPublished!: boolean;
+  fulfillmentStatus!: WinnerFulfillmentStatus;
+  fulfillmentUpdatedAt!: Date;
 }
 
 export type RaffleDocument = HydratedDocument<Raffle>;
@@ -74,6 +83,12 @@ export class Raffle {
       ticketId: { type: Types.ObjectId, ref: 'Ticket' },
       drawnAt: { type: Date },
       isPublished: { type: Boolean, default: true },
+      fulfillmentStatus: {
+        type: String,
+        enum: Object.values(WinnerFulfillmentStatus),
+        default: WinnerFulfillmentStatus.PENDING_VERIFICATION,
+      },
+      fulfillmentUpdatedAt: { type: Date, default: () => new Date() },
     },
     default: null,
     _id: false,

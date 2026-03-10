@@ -43,10 +43,11 @@ export class RafflesController {
   async listPublic(
     @Query('limit') limit?: string,
     @Query('sort') sort?: 'endAt' | 'createdAt',
+    @Query('category') category?: string,
   ) {
     const n = Math.min(Math.max(parseInt(limit ?? '30', 10) || 30, 1), 100);
     const s = sort === 'endAt' ? 'endAt' : 'createdAt';
-    return this.rafflesService.listPublic({ limit: n, sort: s });
+    return this.rafflesService.listPublic({ limit: n, sort: s, category });
   }
 
   @Post('admin/create-with-product')

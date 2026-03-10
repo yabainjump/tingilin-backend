@@ -11,10 +11,23 @@ import { CreateRaffleDto } from './dto/create-raffle.dto';
 import { UpdateRaffleDto } from './dto/update-raffle.dto';
 import { AdminCreateRaffleDto } from './dto/admin-create-raffle.dto';
 
-import { Raffle, RaffleDocument, RaffleStatus } from './schemas/raffle.schema';
+import {
+  Raffle,
+  RaffleDocument,
+  RaffleStatus,
+  WinnerFulfillmentStatus,
+} from './schemas/raffle.schema';
 import { Ticket, TicketDocument } from '../tickets/schemas/ticket.schema';
 import { Product, ProductDocument } from '../products/schemas/product.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
+import {
+  Transaction,
+  TransactionDocument,
+} from '../payments/schemas/transaction.schema';
+import {
+  Participation,
+  ParticipationDocument,
+} from '../participations/schemas/participation.schema';
 import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
@@ -31,6 +44,10 @@ export class RafflesService {
 
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    @InjectModel(Transaction.name)
+    private readonly txModel: Model<TransactionDocument>,
+    @InjectModel(Participation.name)
+    private readonly participationModel: Model<ParticipationDocument>,
 
     private readonly productsService: ProductsService,
     @InjectConnection() private readonly connection: Connection,
@@ -192,9 +209,16 @@ export class RafflesService {
     }
   }
 
-  async listPublic(opts?: { limit?: number; sort?: 'endAt' | 'createdAt' }) {
+  async listPublic(opts?: {
+    limit?: number;
+    sort?: 'endAt' | 'createdAt';
+    category?: string;
+  }) {
     const limit = Math.min(Math.max(Number(opts?.limit ?? 30), 1), 100);
     const now = new Date();
+    const category = String(opts?.category ?? '')
+      .trim()
+      .toUpperCase();
 
     const sort =
       opts?.sort === 'endAt' ? { endAt: 1, createdAt: -1 } : { createdAt: -1 };
@@ -214,9 +238,25 @@ export class RafflesService {
             },
           };
 
+    if (category && category !== 'ALL') {
+      const productIds = await this.productModel
+        .find({ categoryId: category })
+        .select('_id')
+        .lean()
+        .exec();
+
+      if (!productIds.length) {
+        return [];
+      }
+
+      (match as any).productId = {
+        $in: productIds.map((row: any) => row._id),
+      };
+    }
+
     const raffles = await this.raffleModel
       .find(match as any)
-      .populate('productId', 'title description imageUrl')
+      .populate('productId', 'title description imageUrl categoryId')
       .sort(sort as any)
       .limit(limit)
       .lean()
@@ -248,6 +288,7 @@ export class RafflesService {
         title: p.title ?? '—',
         subtitle: p.description ?? '',
         imageUrl: p.imageUrl ?? '',
+        categoryId: String(p.categoryId ?? ''),
         status: r.status ?? RaffleStatus.LIVE,
         sold: r.ticketsSold ?? 0,
         total: r.totalTickets ?? 0,
@@ -364,10 +405,11 @@ export class RafflesService {
         } as any,
         { new: true },
       )
+      .populate('productId', 'title realValue imageUrl')
       .exec();
 
     if (!updated) throw new NotFoundException('Raffle not found');
-    return updated;
+    return this.toAdminRafflePayload(updated as any);
   }
 
   async adminStart(id: string) {
@@ -392,15 +434,468 @@ export class RafflesService {
     return r.save();
   }
 
+  private toAdminRafflePayload(rawRaffle: any) {
+    const raffle =
+      rawRaffle && typeof rawRaffle.toObject === 'function'
+        ? rawRaffle.toObject()
+        : rawRaffle;
+
+    const product = raffle?.productId;
+    const isPopulatedProduct =
+      product &&
+      typeof product === 'object' &&
+      String(product?._id ?? '').length > 0;
+
+    return {
+      ...raffle,
+      id: String(raffle?._id ?? ''),
+      product: isPopulatedProduct
+        ? {
+            id: String(product._id),
+            title: String(product.title ?? ''),
+            realValue: Number(product.realValue ?? 0),
+            imageUrl: String(product.imageUrl ?? ''),
+          }
+        : null,
+      productId: isPopulatedProduct
+        ? String(product._id)
+        : String(raffle?.productId ?? ''),
+    };
+  }
+
   async adminListAll() {
-    return this.raffleModel.find().sort({ createdAt: -1 }).exec();
+    const raffles: any[] = await this.raffleModel
+      .find()
+      .populate('productId', 'title realValue imageUrl')
+      .sort({ createdAt: -1 })
+      .lean()
+      .exec();
+
+    return raffles.map((raffle: any) => this.toAdminRafflePayload(raffle));
   }
 
   async adminGetById(id: string) {
     this.ensureObjectId(id);
-    const r = await this.raffleModel.findById(id).exec();
+    const r = await this.raffleModel
+      .findById(id)
+      .populate('productId', 'title realValue imageUrl')
+      .lean()
+      .exec();
     if (!r) throw new NotFoundException('Raffle not found');
-    return r;
+    return this.toAdminRafflePayload(r);
+  }
+
+  async adminDeleteRaffle(id: string) {
+    this.ensureObjectId(id);
+    const raffle = await this.raffleModel.findById(id).exec();
+    if (!raffle) throw new NotFoundException('Raffle not found');
+
+    const [ticketsCount, successfulTxCount] = await Promise.all([
+      this.ticketModel.countDocuments({ raffleId: raffle._id }).exec(),
+      this.txModel
+        .countDocuments({
+          raffleId: raffle._id,
+          status: 'SUCCESS',
+        })
+        .exec(),
+    ]);
+
+    if (ticketsCount > 0 || successfulTxCount > 0) {
+      throw new BadRequestException(
+        'Cannot delete a raffle with sold tickets or successful payments',
+      );
+    }
+
+    await Promise.all([
+      this.ticketModel.deleteMany({ raffleId: raffle._id }).exec(),
+      this.txModel.deleteMany({ raffleId: raffle._id }).exec(),
+      this.participationModel.deleteMany({ raffleId: raffle._id }).exec(),
+      this.raffleModel.deleteOne({ _id: raffle._id }).exec(),
+    ]);
+
+    if (raffle.productId) {
+      const stillUsed = await this.raffleModel
+        .countDocuments({ productId: raffle.productId })
+        .exec();
+      if (stillUsed === 0) {
+        await this.productModel.deleteOne({ _id: raffle.productId }).exec();
+      }
+    }
+
+    return { ok: true, id };
+  }
+
+  private parseWinnerStatusFilter(
+    raw?: string,
+  ): WinnerFulfillmentStatus | null {
+    const value = String(raw ?? 'ALL').trim().toUpperCase();
+    if (!value || value === 'ALL') return null;
+
+    const allowed = Object.values(WinnerFulfillmentStatus);
+    if (!allowed.includes(value as WinnerFulfillmentStatus)) {
+      throw new BadRequestException('Invalid winner status filter');
+    }
+
+    return value as WinnerFulfillmentStatus;
+  }
+
+  private parseWinnerStatusInput(raw?: string): WinnerFulfillmentStatus {
+    const value = String(raw ?? '').trim().toUpperCase();
+    const allowed = Object.values(WinnerFulfillmentStatus);
+
+    if (!allowed.includes(value as WinnerFulfillmentStatus)) {
+      throw new BadRequestException('Invalid winner status');
+    }
+
+    return value as WinnerFulfillmentStatus;
+  }
+
+  private escapeCsvCell(value: unknown): string {
+    const input = String(value ?? '');
+    if (!/[",\n]/.test(input)) return input;
+    return `"${input.replace(/"/g, '""')}"`;
+  }
+
+  async adminListWinners(params?: {
+    search?: string;
+    status?:
+      | 'ALL'
+      | 'PENDING_VERIFICATION'
+      | 'VERIFIED'
+      | 'IN_SHIPPING'
+      | 'DELIVERED';
+    page?: number;
+    limit?: number;
+  }) {
+    const page = Math.max(1, Number(params?.page ?? 1) || 1);
+    const limit = Math.min(100, Math.max(1, Number(params?.limit ?? 20) || 20));
+    const skip = (page - 1) * limit;
+
+    const statusFilter = this.parseWinnerStatusFilter(params?.status);
+    const search = String(params?.search ?? '').trim();
+
+    const baseMatch = {
+      status: RaffleStatus.DRAWN,
+      winner: { $ne: null },
+      'winner.isPublished': true,
+    };
+
+    const stages: any[] = [
+      { $match: baseMatch },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'winner.userId',
+          foreignField: '_id',
+          as: 'user',
+        },
+      },
+      { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'products',
+          localField: 'productId',
+          foreignField: '_id',
+          as: 'product',
+        },
+      },
+      { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'tickets',
+          localField: 'winner.ticketId',
+          foreignField: '_id',
+          as: 'ticket',
+        },
+      },
+      { $unwind: { path: '$ticket', preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          winnerStatus: {
+            $ifNull: [
+              '$winner.fulfillmentStatus',
+              WinnerFulfillmentStatus.PENDING_VERIFICATION,
+            ],
+          },
+        },
+      },
+    ];
+
+    if (statusFilter) {
+      stages.push({ $match: { winnerStatus: statusFilter } });
+    }
+
+    if (search) {
+      const regex = new RegExp(search, 'i');
+      stages.push({
+        $match: {
+          $or: [
+            { 'user.firstName': regex },
+            { 'user.lastName': regex },
+            { 'user.username': regex },
+            { 'user.email': regex },
+            { 'product.title': regex },
+            { 'ticket.serial': regex },
+          ],
+        },
+      });
+    }
+
+    const [result] = await this.raffleModel
+      .aggregate([
+        ...stages,
+        { $sort: { 'winner.drawnAt': -1 } },
+        {
+          $facet: {
+            data: [
+              { $skip: skip },
+              { $limit: limit },
+              {
+                $project: {
+                  raffleId: { $toString: '$_id' },
+                  raffleDate: '$winner.drawnAt',
+                  status: '$winnerStatus',
+                  ticketSerial: '$ticket.serial',
+                  productTitle: '$product.title',
+                  productSubtitle: '$product.description',
+                  productImageUrl: '$product.imageUrl',
+                  prizeValue: { $ifNull: ['$product.realValue', 0] },
+                  winnerUserId: {
+                    $cond: [
+                      { $ifNull: ['$winner.userId', false] },
+                      { $toString: '$winner.userId' },
+                      null,
+                    ],
+                  },
+                  winnerFirstName: '$user.firstName',
+                  winnerLastName: '$user.lastName',
+                  winnerUsername: '$user.username',
+                  winnerEmail: '$user.email',
+                  winnerAvatar: '$user.avatar',
+                  winnerPhone: '$user.phone',
+                  winnerRole: '$user.role',
+                  winnerAccountStatus: '$user.status',
+                },
+              },
+            ],
+            total: [{ $count: 'count' }],
+          },
+        },
+      ])
+      .exec();
+
+    const rows = Array.isArray(result?.data) ? result.data : [];
+    const total = Number(result?.total?.[0]?.count ?? 0);
+
+    const [summary] = await this.raffleModel
+      .aggregate([
+        { $match: baseMatch },
+        {
+          $lookup: {
+            from: 'products',
+            localField: 'productId',
+            foreignField: '_id',
+            as: 'product',
+          },
+        },
+        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+        {
+          $addFields: {
+            winnerStatus: {
+              $ifNull: [
+                '$winner.fulfillmentStatus',
+                WinnerFulfillmentStatus.PENDING_VERIFICATION,
+              ],
+            },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            totalWinners: { $sum: 1 },
+            deliveredCount: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$winnerStatus', WinnerFulfillmentStatus.DELIVERED] },
+                  1,
+                  0,
+                ],
+              },
+            },
+            pendingActions: {
+              $sum: {
+                $cond: [
+                  {
+                    $in: [
+                      '$winnerStatus',
+                      [
+                        WinnerFulfillmentStatus.PENDING_VERIFICATION,
+                        WinnerFulfillmentStatus.VERIFIED,
+                        WinnerFulfillmentStatus.IN_SHIPPING,
+                      ],
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+            totalRewardsXaf: { $sum: { $ifNull: ['$product.realValue', 0] } },
+          },
+        },
+      ])
+      .exec();
+
+    const totalWinners = Number(summary?.totalWinners ?? 0);
+    const deliveredCount = Number(summary?.deliveredCount ?? 0);
+    const pendingActions = Number(summary?.pendingActions ?? 0);
+    const totalRewardsXaf = Number(summary?.totalRewardsXaf ?? 0);
+    const deliveryRate =
+      totalWinners > 0
+        ? Math.round((deliveredCount / totalWinners) * 100)
+        : 0;
+
+    return {
+      data: rows.map((row: any) => {
+        const ticketCode = this.toTicketCode(row?.ticketSerial);
+        const winnerName =
+          [
+            String(row?.winnerFirstName ?? '').trim(),
+            String(row?.winnerLastName ?? '').trim(),
+          ]
+            .filter(Boolean)
+            .join(' ') ||
+          String(row?.winnerUsername ?? '').trim() ||
+          String(row?.winnerEmail ?? '').trim() ||
+          'Winner';
+
+        return {
+          raffleId: String(row?.raffleId ?? ''),
+          winnerUserId: row?.winnerUserId ? String(row.winnerUserId) : null,
+          winnerName,
+          winnerFirstName: String(row?.winnerFirstName ?? ''),
+          winnerLastName: String(row?.winnerLastName ?? ''),
+          winnerUsername: String(row?.winnerUsername ?? ''),
+          winnerEmail: String(row?.winnerEmail ?? ''),
+          winnerAvatar: String(row?.winnerAvatar ?? ''),
+          winnerPhone: String(row?.winnerPhone ?? ''),
+          winnerRole: String(row?.winnerRole ?? ''),
+          winnerAccountStatus: String(row?.winnerAccountStatus ?? ''),
+          productTitle: String(row?.productTitle ?? 'Prize'),
+          productSubtitle: String(row?.productSubtitle ?? ''),
+          productImageUrl: String(row?.productImageUrl ?? ''),
+          ticketSerial: row?.ticketSerial ? String(row.ticketSerial) : null,
+          ticketId: ticketCode ? `TK-${ticketCode}` : null,
+          raffleDate: row?.raffleDate ?? null,
+          status: this.parseWinnerStatusInput(row?.status),
+          prizeValue: Number(row?.prizeValue ?? 0),
+        };
+      }),
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+      summary: {
+        currency: 'XAF',
+        pendingActions,
+        totalRewardsXaf,
+        deliveriesRate: deliveryRate,
+        deliveredCount,
+        totalWinners,
+      },
+    };
+  }
+
+  async adminUpdateWinnerStatus(raffleId: string, status: string) {
+    this.ensureObjectId(raffleId, 'Invalid raffle id');
+
+    const nextStatus = this.parseWinnerStatusInput(status);
+    const raffle: any = await this.raffleModel.findById(raffleId).exec();
+    if (!raffle) throw new NotFoundException('Raffle not found');
+    if (raffle.status !== RaffleStatus.DRAWN || !raffle.winner) {
+      throw new BadRequestException('Raffle has no published winner');
+    }
+
+    const currentStatus = this.parseWinnerStatusInput(
+      raffle.winner.fulfillmentStatus ??
+        WinnerFulfillmentStatus.PENDING_VERIFICATION,
+    );
+
+    const allowedTransitions: Record<
+      WinnerFulfillmentStatus,
+      WinnerFulfillmentStatus[]
+    > = {
+      [WinnerFulfillmentStatus.PENDING_VERIFICATION]: [
+        WinnerFulfillmentStatus.VERIFIED,
+      ],
+      [WinnerFulfillmentStatus.VERIFIED]: [WinnerFulfillmentStatus.IN_SHIPPING],
+      [WinnerFulfillmentStatus.IN_SHIPPING]: [
+        WinnerFulfillmentStatus.DELIVERED,
+      ],
+      [WinnerFulfillmentStatus.DELIVERED]: [],
+    };
+
+    if (nextStatus !== currentStatus) {
+      const allowed = allowedTransitions[currentStatus] ?? [];
+      if (!allowed.includes(nextStatus)) {
+        throw new BadRequestException(
+          `Invalid winner status transition: ${currentStatus} -> ${nextStatus}`,
+        );
+      }
+    }
+
+    raffle.winner.fulfillmentStatus = nextStatus;
+    raffle.winner.fulfillmentUpdatedAt = new Date();
+    raffle.markModified('winner');
+    await raffle.save();
+
+    return {
+      raffleId: String(raffle._id),
+      status: nextStatus,
+      fulfillmentUpdatedAt: raffle.winner.fulfillmentUpdatedAt,
+    };
+  }
+
+  async adminExportWinnersCsv(params?: {
+    search?: string;
+    status?:
+      | 'ALL'
+      | 'PENDING_VERIFICATION'
+      | 'VERIFIED'
+      | 'IN_SHIPPING'
+      | 'DELIVERED';
+  }): Promise<string> {
+    const rows = await this.adminListWinners({
+      search: params?.search,
+      status: params?.status,
+      page: 1,
+      limit: 1000,
+    });
+
+    const lines = [
+      [
+        'winner_name',
+        'winner_email',
+        'product_title',
+        'ticket_id',
+        'status',
+        'raffle_date',
+        'prize_value_xaf',
+      ].join(','),
+      ...rows.data.map((row: any) =>
+        [
+          this.escapeCsvCell(row?.winnerName),
+          this.escapeCsvCell(row?.winnerEmail),
+          this.escapeCsvCell(row?.productTitle),
+          this.escapeCsvCell(row?.ticketId),
+          this.escapeCsvCell(row?.status),
+          this.escapeCsvCell(row?.raffleDate),
+          this.escapeCsvCell(row?.prizeValue),
+        ].join(','),
+      ),
+    ];
+
+    return lines.join('\n');
   }
 
   async incrementStats(
@@ -467,6 +962,8 @@ export class RafflesService {
       ticketId: winner._id,
       drawnAt: raffle.drawnAt,
       isPublished: true,
+      fulfillmentStatus: WinnerFulfillmentStatus.PENDING_VERIFICATION,
+      fulfillmentUpdatedAt: new Date(),
     };
 
     raffle.status = RaffleStatus.DRAWN;
@@ -525,7 +1022,7 @@ export class RafflesService {
     }
 
     const categoryId =
-      (dto.product.categoryId && String(dto.product.categoryId).trim()) ||
+      String(dto.product.categoryId ?? 'GENERAL').trim().toUpperCase() ||
       'GENERAL';
 
     const session = await this.connection.startSession();
@@ -639,8 +1136,8 @@ export class RafflesService {
 
   async listForHome() {
     const now = new Date();
-    const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
-    const minEndAt = new Date(Date.now() - twoDaysMs);
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    const minEndAt = new Date(Date.now() - sevenDaysMs);
 
     const q: any = {
       endAt: { $gte: minEndAt },
@@ -715,6 +1212,8 @@ export class RafflesService {
       ticketId: ticket._id,
       drawnAt: raffle.drawnAt,
       isPublished: true,
+      fulfillmentStatus: WinnerFulfillmentStatus.PENDING_VERIFICATION,
+      fulfillmentUpdatedAt: new Date(),
     };
 
     await raffle.save();

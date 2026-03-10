@@ -15,6 +15,14 @@ import {
 import { Ticket, TicketDocument } from '../tickets/schemas/ticket.schema';
 import { Raffle, RaffleDocument } from '../raffles/schemas/raffle.schema';
 import { Product, ProductDocument } from '../products/schemas/product.schema';
+import {
+  Transaction,
+  TransactionDocument,
+} from '../payments/schemas/transaction.schema';
+import {
+  Participation,
+  ParticipationDocument,
+} from '../participations/schemas/participation.schema';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 
@@ -32,6 +40,10 @@ export class UsersService {
     private readonly raffleModel: Model<RaffleDocument>,
     @InjectModel(Product.name)
     private readonly productModel: Model<ProductDocument>,
+    @InjectModel(Transaction.name)
+    private readonly txModel: Model<TransactionDocument>,
+    @InjectModel(Participation.name)
+    private readonly participationModel: Model<ParticipationDocument>,
     private readonly notifications: NotificationsService,
   ) {}
 
@@ -51,6 +63,10 @@ export class UsersService {
     return this.userModel.findOne({ referralCode: normalized }).exec();
   }
 
+  async countUsers(): Promise<number> {
+    return this.userModel.countDocuments({}).exec();
+  }
+
   async findById(id: string) {
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException('Invalid user id');
@@ -64,6 +80,8 @@ export class UsersService {
     return {
       _id: user._id.toString(),
       email: user.email,
+      username:
+        String((user as any).username ?? '').trim() || user.email.split('@')[0],
       firstName: user.firstName,
       lastName: user.lastName,
       phone: user.phone,
@@ -102,10 +120,12 @@ export class UsersService {
     lastName: string;
     phone: string;
     role?: UserRole;
+    username?: string;
     avatar?: string;
     referredBy?: string | null;
   }) {
     const email = params.email.trim().toLowerCase();
+    const username = String(params.username ?? '').trim().toLowerCase();
     const firstName = params.firstName.trim();
     const lastName = params.lastName.trim();
     const phone = params.phone.replace(/\s|-/g, '').trim();
@@ -113,6 +133,7 @@ export class UsersService {
 
     return this.userModel.create({
       email,
+      username: username || email.split('@')[0],
       passwordHash: params.passwordHash,
       firstName,
       lastName,
@@ -188,9 +209,137 @@ export class UsersService {
   }
 
   async updateRole(userId: string, role: 'USER' | 'ADMIN' | 'MODERATOR') {
-    return this.userModel
+    const updated = await this.userModel
       .findByIdAndUpdate(userId, { role }, { new: true })
       .exec();
+    if (!updated) throw new NotFoundException('User not found');
+    return updated;
+  }
+
+  async updateStatus(userId: string, status: 'ACTIVE' | 'SUSPENDED') {
+    const updated = await this.userModel
+      .findByIdAndUpdate(userId, { status }, { new: true })
+      .exec();
+    if (!updated) throw new NotFoundException('User not found');
+    return updated;
+  }
+
+  async adminDeleteUser(userId: string, actorUserId?: string) {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Invalid user id');
+    }
+    if (actorUserId && String(actorUserId) === String(userId)) {
+      throw new BadRequestException('You cannot delete your own account');
+    }
+
+    const user = await this.userModel.findById(userId).exec();
+    if (!user) throw new NotFoundException('User not found');
+
+    if (user.role === 'ADMIN') {
+      const adminsCount = await this.userModel.countDocuments({
+        role: 'ADMIN',
+      });
+      if (adminsCount <= 1) {
+        throw new BadRequestException('Cannot delete the last admin account');
+      }
+    }
+
+    const [ticketsCount, txCount, wonCount] = await Promise.all([
+      this.ticketModel.countDocuments({ userId: user._id }).exec(),
+      this.txModel.countDocuments({ userId: user._id }).exec(),
+      this.raffleModel.countDocuments({ winnerUserId: user._id }).exec(),
+    ]);
+
+    if (ticketsCount > 0 || txCount > 0 || wonCount > 0) {
+      throw new BadRequestException(
+        'User has history data (tickets/payments/wins). Suspend account instead of deleting.',
+      );
+    }
+
+    await Promise.all([
+      this.participationModel.deleteMany({ userId: user._id }).exec(),
+      this.userModel.deleteOne({ _id: user._id }).exec(),
+    ]);
+
+    return {
+      ok: true,
+      id: user._id.toString(),
+      email: user.email,
+    };
+  }
+
+  async adminList(params?: {
+    search?: string;
+    role?: UserRole | 'ALL';
+    status?: 'ALL' | 'ACTIVE' | 'SUSPENDED';
+    page?: number;
+    limit?: number;
+  }) {
+    const page = Math.max(1, Number(params?.page ?? 1) || 1);
+    const limit = Math.min(100, Math.max(1, Number(params?.limit ?? 20) || 20));
+    const skip = (page - 1) * limit;
+
+    const role =
+      params?.role && params.role !== 'ALL'
+        ? String(params.role).toUpperCase()
+        : null;
+    const status =
+      params?.status && params.status !== 'ALL'
+        ? String(params.status).toUpperCase()
+        : null;
+    const search = String(params?.search ?? '').trim();
+
+    const query: Record<string, any> = {};
+    if (role) {
+      query.role = role;
+    }
+    if (status) {
+      query.status = status;
+    }
+    if (search) {
+      query.$or = [
+        { email: { $regex: search, $options: 'i' } },
+        { firstName: { $regex: search, $options: 'i' } },
+        { lastName: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const [rows, total] = await Promise.all([
+      this.userModel
+        .find(query)
+        .select(
+          '_id email username firstName lastName phone role status createdAt freeTicketsBalance avatar',
+        )
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean()
+        .exec(),
+      this.userModel.countDocuments(query).exec(),
+    ]);
+
+    return {
+      data: rows.map((row: any) => ({
+        id: String(row._id),
+        email: row.email,
+        username:
+          String(row.username ?? '').trim() ||
+          String(row.email ?? '').split('@')[0],
+        firstName: row.firstName,
+        lastName: row.lastName,
+        phone: row.phone,
+        avatar: row.avatar,
+        role: row.role,
+        status: row.status,
+        freeTicketsBalance: Number(row.freeTicketsBalance ?? 0),
+        createdAt: row.createdAt ?? null,
+      })),
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    };
   }
 
   async getMe(userId: string) {
@@ -200,6 +349,7 @@ export class UsersService {
     return {
       id: String(u._id),
       email: u.email,
+      username: String((u as any).username ?? '').trim() || u.email.split('@')[0],
       firstName: u.firstName,
       lastName: u.lastName,
       phone: u.phone,
