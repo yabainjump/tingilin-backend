@@ -1,5 +1,6 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AppService } from './app.service';
 import { Roles } from './common/decorators/roles.decorator';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -7,6 +8,7 @@ import { PaymentsService } from './modules/payments/payments.service';
 import { RafflesService } from './modules/raffles/raffles.service';
 import { UsersService } from './modules/users/users.service';
 
+@ApiTags('System')
 @Controller()
 export class AppController {
   constructor(
@@ -21,6 +23,7 @@ export class AppController {
     return this.appService.getHello();
   }
 
+  @ApiBearerAuth('access-token')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('ADMIN')
   @Get('admin/search')

@@ -8,11 +8,14 @@ import {
   UseGuards,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { NotificationsService } from './notifications.service';
 
 // ⚠️ Mets EXACTEMENT le même import que dans payments/tickets controller
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
+@ApiTags('Notifications')
+@ApiBearerAuth('access-token')
 @UseGuards(JwtAuthGuard) // ✅ ICI (au-dessus de @Controller)
 @Controller('notifications')
 export class NotificationsController {

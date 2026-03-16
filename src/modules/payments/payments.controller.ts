@@ -1,5 +1,6 @@
 import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CreateIntentDto } from './dto/create-intent.dto';
 import { MockConfirmDto } from './dto/mock-confirm.dto';
 import { PaymentsService } from './payments.service';
@@ -8,6 +9,8 @@ import { MockFailDto } from './dto/mock-fail.dto';
 import { DigikuntzVerifyDto } from './dto/digikuntz-verify.dto';
 import { CreateFreeTicketDto } from './dto/create-free-ticket.dto';
 
+@ApiTags('Payments')
+@ApiBearerAuth('access-token')
 @UseGuards(AuthGuard('jwt'))
 @Controller('payments')
 export class PaymentsController {

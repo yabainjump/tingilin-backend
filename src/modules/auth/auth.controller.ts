@@ -8,14 +8,17 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UsersService } from '../users/users.service';
 
+@ApiTags('Authentication')
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -59,6 +62,7 @@ export class AuthController {
     return this.authService.resetPassword(dto);
   }
 
+  @ApiBearerAuth('access-token')
   @UseGuards(AuthGuard('jwt'))
   @Get('me')
   async me(@Request() req: any) {
@@ -68,7 +72,7 @@ export class AuthController {
 
   @Post('refresh')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
-  refresh(@Body('refresh_token') refresh_token: string) {
-    return this.authService.refresh(refresh_token);
+  refresh(@Body() dto: RefreshTokenDto) {
+    return this.authService.refresh(dto.refresh_token);
   }
 }

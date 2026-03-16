@@ -8,6 +8,7 @@ import {
   Query,
   Param,
 } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { RafflesService } from './raffles.service';
 import { RafflesPublicService } from './raffles.public.service';
 
@@ -17,6 +18,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 
+@ApiTags('Raffles')
 @Controller('raffles')
 export class RafflesController {
   constructor(

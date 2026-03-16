@@ -7,6 +7,7 @@ import {
   Query,
   Res,
 } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -14,6 +15,7 @@ import { Model } from 'mongoose';
 import { Raffle } from '../raffles/schemas/raffle.schema';
 import { User } from '../users/schemas/user.schema';
 
+@ApiTags('Share')
 @Controller('share')
 export class ShareController {
   constructor(

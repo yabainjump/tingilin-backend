@@ -12,6 +12,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { AuditService } from '../audit/audit.service';
@@ -20,6 +21,8 @@ import { UpdateWinnerStatusDto } from './dto/update-winner-status.dto';
 import { UpdateRaffleDto } from './dto/update-raffle.dto';
 import { RafflesService } from './raffles.service';
 
+@ApiTags('Raffles Admin')
+@ApiBearerAuth('access-token')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 @Roles('ADMIN')
 @Controller('admin/raffles')
