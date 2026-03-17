@@ -28,24 +28,56 @@ async function bootstrap() {
   mkdirSync(uploadsDir, { recursive: true });
   app.use('/uploads', expressStatic(uploadsDir));
 
+  const normalizeOrigin = (origin: string) =>
+    origin.trim().replace(/\/+$/, '').toLowerCase();
+
   const configuredOrigins = String(process.env.CORS_ORIGINS || '')
     .split(',')
-    .map((origin) => origin.trim())
+    .map((origin) => normalizeOrigin(origin))
     .filter(Boolean);
 
   const defaultOrigins = [
     'http://localhost:8100',
     'http://localhost:4200',
     'http://localhost:4300',
-    'https://admin.tinguilin.yaba-in.com/',
-    'https://tinguilin.yaba-in.com/',
+    'https://admin.tinguilin.yaba-in.com',
+    'https://tinguilin.yaba-in.com',
   ];
 
+  const allowedOrigins = new Set(
+    (configuredOrigins.length > 0 ? configuredOrigins : defaultOrigins).map((origin) =>
+      normalizeOrigin(origin),
+    ),
+  );
+
   app.enableCors({
-    origin: configuredOrigins.length > 0 ? configuredOrigins : defaultOrigins,
+    origin: (origin, callback) => {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+
+      const normalizedOrigin = normalizeOrigin(origin);
+
+      if (allowedOrigins.has(normalizedOrigin)) {
+        callback(null, true);
+        return;
+      }
+
+      logger.warn(`Blocked CORS origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'Accept',
+      'Origin',
+      'X-Requested-With',
+    ],
     credentials: true,
+    optionsSuccessStatus: 204,
+    preflightContinue: false,
   });
 
   const appName = String(process.env.APP_NAME || 'Tingilin API').trim();
