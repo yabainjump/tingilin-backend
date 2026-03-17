@@ -5,6 +5,8 @@ import { Raffle } from './schemas/raffle.schema';
 import { Product } from '../products/schemas/product.schema';
 import { Ticket } from '../tickets/schemas/ticket.schema';
 import { User } from '../users/schemas/user.schema';
+import { Transaction } from '../payments/schemas/transaction.schema';
+import { Participation } from '../participations/schemas/participation.schema';
 import { ProductsService } from '../products/products.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RaffleStatus } from './schemas/raffle.schema';
@@ -12,6 +14,7 @@ import { RaffleStatus } from './schemas/raffle.schema';
 describe('RafflesService', () => {
   let service: RafflesService;
   let raffleModelMock: any;
+  let productModelMock: any;
 
   beforeEach(async () => {
     const queryMock = {
@@ -24,6 +27,16 @@ describe('RafflesService', () => {
 
     raffleModelMock = {
       find: jest.fn().mockReturnValue(queryMock),
+      findById: jest.fn(),
+      countDocuments: jest.fn(),
+      aggregate: jest.fn(),
+      findOneAndUpdate: jest.fn(),
+      findByIdAndUpdate: jest.fn(),
+      create: jest.fn(),
+    };
+
+    productModelMock = {
+      find: jest.fn(),
       findById: jest.fn(),
       countDocuments: jest.fn(),
       aggregate: jest.fn(),
@@ -46,9 +59,11 @@ describe('RafflesService', () => {
       providers: [
         RafflesService,
         { provide: getModelToken(Raffle.name), useValue: raffleModelMock },
-        { provide: getModelToken(Product.name), useValue: modelMock },
+        { provide: getModelToken(Product.name), useValue: productModelMock },
         { provide: getModelToken(Ticket.name), useValue: modelMock },
         { provide: getModelToken(User.name), useValue: modelMock },
+        { provide: getModelToken(Transaction.name), useValue: modelMock },
+        { provide: getModelToken(Participation.name), useValue: modelMock },
         { provide: ProductsService, useValue: {} },
         { provide: getConnectionToken(), useValue: {} },
         { provide: NotificationsService, useValue: {} },
@@ -84,5 +99,13 @@ describe('RafflesService', () => {
         }),
       }),
     );
+  });
+
+  it('listPublic(category=all) should skip product category filtering', async () => {
+    await service.listPublic({ sort: 'endAt', limit: 10, category: 'all' });
+
+    const match = raffleModelMock.find.mock.calls.at(-1)?.[0];
+    expect(productModelMock.find).not.toHaveBeenCalled();
+    expect(match?.productId).toBeUndefined();
   });
 });

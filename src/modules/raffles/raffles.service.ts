@@ -1084,6 +1084,9 @@ export class RafflesService {
     limit: number;
     sort: string;
   }) {
+    const category = String(opts.category ?? '')
+      .trim()
+      .toUpperCase();
     const sortStage = opts.sort === 'endAt' ? { endAt: 1 } : { createdAt: -1 };
 
     const pipeline: any[] = [
@@ -1100,8 +1103,8 @@ export class RafflesService {
       { $unwind: '$product' },
     ];
 
-    if (opts.category && opts.category !== 'all') {
-      pipeline.push({ $match: { 'product.categoryId': opts.category } });
+    if (category && category !== 'ALL') {
+      pipeline.push({ $match: { 'product.categoryId': category } });
     }
 
     pipeline.push({ $sort: sortStage });
