@@ -37,6 +37,8 @@ async function bootstrap() {
     'http://localhost:8100',
     'http://localhost:4200',
     'http://localhost:4300',
+    'https://admin.tinguilin.yaba-in.com/',
+    'https://tinguilin.yaba-in.com/',
   ];
 
   app.enableCors({
