@@ -29,6 +29,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 type HistoryResult = 'WON' | 'LOST' | 'NONE';
 const REFERRAL_TARGET = 10;
 const LOYALTY_TARGET = 10;
+const DEFAULT_AVATAR_PATH = '/assets/img/profile.svg';
 
 @Injectable()
 export class UsersService {
@@ -87,7 +88,7 @@ export class UsersService {
       phone: user.phone,
       role: user.role,
       status: user.status,
-      avatar: user.avatar,
+      avatar: this.normalizeAvatar(user.avatar),
       referralCode: user.referralCode,
       freeTicketsBalance: Number(user.freeTicketsBalance ?? 0),
     };
@@ -103,7 +104,7 @@ export class UsersService {
     if (dto.lastName !== undefined) $set.lastName = dto.lastName.trim();
     if (dto.phone !== undefined)
       $set.phone = dto.phone.replace(/\s|-/g, '').trim();
-    if (dto.avatar !== undefined) $set.avatar = dto.avatar;
+    if (dto.avatar !== undefined) $set.avatar = this.normalizeAvatar(dto.avatar);
 
     const updated = await this.userModel
       .findByIdAndUpdate(id, { $set }, { new: true })
@@ -138,7 +139,7 @@ export class UsersService {
       firstName,
       lastName,
       phone,
-      avatar: params.avatar ?? 'profile.svg',
+      avatar: this.normalizeAvatar(params.avatar),
       role: params.role ?? 'USER',
       referralCode,
       referredBy:
@@ -329,7 +330,7 @@ export class UsersService {
         firstName: row.firstName,
         lastName: row.lastName,
         phone: row.phone,
-        avatar: row.avatar,
+        avatar: this.normalizeAvatar(row.avatar),
         role: row.role,
         status: row.status,
         freeTicketsBalance: Number(row.freeTicketsBalance ?? 0),
@@ -354,7 +355,7 @@ export class UsersService {
       lastName: u.lastName,
       phone: u.phone,
       role: u.role,
-      avatar: u.avatar,
+      avatar: this.normalizeAvatar(u.avatar),
       profile: u.profile ?? {},
       referralCode: u.referralCode,
       freeTicketsBalance: Number(u.freeTicketsBalance ?? 0),
@@ -715,13 +716,75 @@ export class UsersService {
         userId: String(r._id),
         firstName: r.firstName,
         lastName: r.lastName,
-        avatar: r.avatar,
+        avatar: this.normalizeAvatar(r.avatar),
         active: Boolean(r.referralQualified),
         qualifiedAt: r.referralQualifiedAt ?? null,
         createdAt: r.createdAt ?? null,
       })),
       rewardHistory,
     };
+  }
+
+  private appOrigin(): string {
+    return this.cleanBase(
+      process.env.PUBLIC_APP_URL || process.env.APP_WEB_URL || '',
+    );
+  }
+
+  private cleanBase(raw: string): string {
+    return String(raw ?? '')
+      .trim()
+      .replace(/\/api\/v1\/?$/i, '')
+      .replace(/\/+$/, '');
+  }
+
+  private defaultAvatar(): string {
+    const appUrl = this.appOrigin();
+    if (!appUrl) return DEFAULT_AVATAR_PATH;
+    return `${appUrl}${DEFAULT_AVATAR_PATH}`;
+  }
+
+  private normalizeAvatar(input?: string | null): string {
+    const raw = String(input ?? '').trim();
+    const normalized = raw.toLowerCase();
+
+    if (
+      !raw ||
+      normalized === 'null' ||
+      normalized === 'undefined' ||
+      normalized === 'profile.svg' ||
+      normalized === '../profile.svg' ||
+      normalized === 'src/assets/img/profile.svg' ||
+      normalized === '../../../../assets/img/profile.svg'
+    ) {
+      return this.defaultAvatar();
+    }
+
+    if (
+      raw.startsWith('http://') ||
+      raw.startsWith('https://') ||
+      raw.startsWith('data:')
+    ) {
+      return raw;
+    }
+
+    if (raw.startsWith('/assets/') || raw.startsWith('/uploads/')) {
+      return raw;
+    }
+
+    if (raw.startsWith('assets/')) {
+      return `/${raw}`;
+    }
+
+    if (raw.startsWith('src/assets/')) {
+      return `/${raw.replace(/^src\//, '')}`;
+    }
+
+    if (raw.startsWith('../assets/')) {
+      return `/${raw.replace(/^(\.\.\/)+/, '')}`;
+    }
+
+    return raw;
   }
 
   private formatDateLabel(d: Date): string {

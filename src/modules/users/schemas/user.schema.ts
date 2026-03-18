@@ -80,7 +80,7 @@ export class User {
   })
   rewardHistory!: RewardHistoryItem[];
 
-  @Prop({ default: '../profile.svg' })
+  @Prop({ default: '/assets/img/profile.svg' })
   avatar!: string;
 
   @Prop({ type: Object, default: {} })

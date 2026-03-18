@@ -68,4 +68,27 @@ describe('ShareController', () => {
     expect(html).toContain('http://localhost:8100/raffle-details/abc123');
     expect(html).not.toContain('/tabs/raffle-details/abc123');
   });
+
+  it('builds referral share page redirecting to register with prefilled code', async () => {
+    process.env.PUBLIC_APP_URL = 'http://localhost:8100';
+    process.env.PUBLIC_API_URL = 'http://localhost:3000';
+
+    findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        firstName: 'Jane',
+        lastName: 'Doe',
+      }),
+    });
+
+    const res = createResponseMock();
+    await controller.shareReferral('WIN-PWV95M', res as any);
+
+    const html = String(res.send.mock.calls[0][0]);
+    expect(html).toContain(
+      'http://localhost:8100/auth/register?ref=WIN-PWV95M&referralCode=WIN-PWV95M',
+    );
+    expect(html).toContain('http://localhost:8100/assets/img/placeholder.png');
+    expect(html).toContain('http://localhost:3000/share/referral/WIN-PWV95M');
+  });
 });

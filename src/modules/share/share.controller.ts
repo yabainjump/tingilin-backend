@@ -84,8 +84,9 @@ export class ShareController {
       ? `${inviter} t'invite sur Tinguilin`
       : 'Invitation Tinguilin';
     const description = `Inscris-toi avec le code ${normalizedCode} et participe aux raffles en direct sur Tinguilin.`;
-    const shareUrl = `${apiUrl}/share/referral/${encodeURIComponent(normalizedCode)}`;
-    const redirectTo = `${appUrl}/auth/register?ref=${encodeURIComponent(normalizedCode)}`;
+    const encodedCode = encodeURIComponent(normalizedCode);
+    const shareUrl = `${apiUrl}/share/referral/${encodedCode}`;
+    const redirectTo = `${appUrl}/auth/register?ref=${encodedCode}&referralCode=${encodedCode}`;
 
     return this.sendSharePage(res, {
       title,
@@ -170,7 +171,19 @@ export class ShareController {
   }
 
   private defaultImage(): string {
-    return `${this.apiOrigin()}/public/og-default.jpg`;
+    const configured = String(
+      process.env.PUBLIC_SHARE_IMAGE_URL || process.env.OG_IMAGE_URL || '',
+    ).trim();
+
+    if (configured) {
+      if (/^https?:\/\//i.test(configured)) return configured;
+      if (configured.startsWith('/')) {
+        return `${this.appOrigin()}${configured}`;
+      }
+      return `${this.appOrigin()}/${configured.replace(/^\/+/, '')}`;
+    }
+
+    return `${this.appOrigin()}/assets/img/placeholder.png`;
   }
 
   private normalizeAppPath(raw?: string): string {
