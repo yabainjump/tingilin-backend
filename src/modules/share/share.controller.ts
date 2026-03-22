@@ -148,11 +148,17 @@ export class ShareController {
   }
 
   private appOrigin(): string {
-    return this.cleanBase(
+    const explicit = this.cleanBase(
       process.env.PUBLIC_APP_URL ||
         process.env.APP_WEB_URL ||
-        'http://localhost:8100',
+        '',
     );
+    if (explicit) return explicit;
+
+    const inferred = this.inferAppOriginFromApi(this.apiOrigin());
+    if (inferred) return inferred;
+
+    return 'http://localhost:8100';
   }
 
   private apiOrigin(): string {
@@ -168,6 +174,21 @@ export class ShareController {
       .trim()
       .replace(/\/api\/v1\/?$/i, '')
       .replace(/\/+$/, '');
+  }
+
+  private inferAppOriginFromApi(apiOrigin: string): string {
+    if (!apiOrigin) return '';
+    try {
+      const u = new URL(apiOrigin);
+      const host = String(u.host ?? '');
+      if (host.toLowerCase().startsWith('backend.')) {
+        const frontendHost = host.slice('backend.'.length);
+        if (frontendHost) return `${u.protocol}//${frontendHost}`;
+      }
+      return '';
+    } catch {
+      return '';
+    }
   }
 
   private defaultImage(): string {

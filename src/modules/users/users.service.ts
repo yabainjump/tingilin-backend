@@ -168,15 +168,9 @@ export class UsersService {
   }
 
   private buildReferralLink(code: string): string {
-    const rawBase =
-      process.env.PUBLIC_API_URL ||
-      process.env.API_PUBLIC_URL ||
-      'http://localhost:3000';
-    const base = String(rawBase ?? '')
-      .trim()
-      .replace(/\/api\/v1\/?$/i, '')
-      .replace(/\/+$/, '');
-    return `${base}/share/referral/${encodeURIComponent(code)}`;
+    const encodedCode = encodeURIComponent(String(code ?? '').trim().toUpperCase());
+    const appBase = this.publicAppOrigin();
+    return `${appBase}/auth/register?ref=${encodedCode}&referralCode=${encodedCode}`;
   }
 
   private appendRewardHistory(
@@ -725,10 +719,18 @@ export class UsersService {
     };
   }
 
-  private appOrigin(): string {
-    return this.cleanBase(
+  private publicAppOrigin(): string {
+    const explicit = this.cleanBase(
       process.env.PUBLIC_APP_URL || process.env.APP_WEB_URL || '',
     );
+    if (explicit) return explicit;
+
+    const api = this.cleanBase(
+      process.env.PUBLIC_API_URL ||
+        process.env.API_PUBLIC_URL ||
+        'http://localhost:3000',
+    );
+    return this.inferAppOriginFromApi(api) || 'http://localhost:8100';
   }
 
   private cleanBase(raw: string): string {
@@ -738,8 +740,23 @@ export class UsersService {
       .replace(/\/+$/, '');
   }
 
+  private inferAppOriginFromApi(apiOrigin: string): string {
+    if (!apiOrigin) return '';
+    try {
+      const u = new URL(apiOrigin);
+      const host = String(u.host ?? '');
+      if (host.toLowerCase().startsWith('backend.')) {
+        const frontendHost = host.slice('backend.'.length);
+        if (frontendHost) return `${u.protocol}//${frontendHost}`;
+      }
+      return '';
+    } catch {
+      return '';
+    }
+  }
+
   private defaultAvatar(): string {
-    const appUrl = this.appOrigin();
+    const appUrl = this.publicAppOrigin();
     if (!appUrl) return DEFAULT_AVATAR_PATH;
     return `${appUrl}${DEFAULT_AVATAR_PATH}`;
   }

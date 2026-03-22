@@ -91,4 +91,29 @@ describe('ShareController', () => {
     expect(html).toContain('http://localhost:8100/assets/img/placeholder.png');
     expect(html).toContain('http://localhost:3000/share/referral/WIN-PWV95M');
   });
+
+  it('infers frontend origin from backend host when PUBLIC_APP_URL is missing', async () => {
+    delete process.env.PUBLIC_APP_URL;
+    delete process.env.APP_WEB_URL;
+    process.env.PUBLIC_API_URL = 'https://backend.tinguilin.yaba-in.com';
+
+    findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        firstName: 'Jane',
+        lastName: 'Doe',
+      }),
+    });
+
+    const res = createResponseMock();
+    await controller.shareReferral('WIN-PWV95M', res as any);
+
+    const html = String(res.send.mock.calls[0][0]);
+    expect(html).toContain(
+      'https://tinguilin.yaba-in.com/auth/register?ref=WIN-PWV95M&referralCode=WIN-PWV95M',
+    );
+    expect(html).toContain(
+      'https://tinguilin.yaba-in.com/assets/img/placeholder.png',
+    );
+  });
 });
