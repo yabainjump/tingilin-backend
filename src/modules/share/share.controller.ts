@@ -33,10 +33,9 @@ export class ShareController {
     if (!raffle) throw new NotFoundException('Raffle not found');
 
     const appUrl = this.appOrigin();
-    const apiUrl = this.apiOrigin();
     const product = raffle?.productId ?? {};
 
-    const title = String(product?.title ?? '').trim() || 'Tombola Tinguilin';
+    const productTitle = String(product?.title ?? '').trim() || 'Tombola Tinguilin';
     const ticketPrice = Number(raffle?.ticketPrice ?? 0);
     const ticketPriceLabel =
       ticketPrice > 0
@@ -46,21 +45,22 @@ export class ShareController {
     const endsAt = endsAtRaw
       ? new Date(endsAtRaw).toLocaleDateString('fr-FR')
       : '';
-    const fallbackDescription = `Tickets à ${ticketPriceLabel}${endsAt ? ` • Tirage le ${endsAt}` : ''} • Participez sur Tinguilin.`;
-    const description =
-      String(product?.description ?? '').trim() || fallbackDescription;
-
-    const image = String(product?.imageUrl ?? '').trim() || this.defaultImage();
+    const fallbackDescription = `Tickets à ${ticketPriceLabel}${endsAt ? ` · Tirage le ${endsAt}` : ''}. Participe maintenant sur Tinguilin pour tenter de gagner ce produit.`;
+    const description = this.metaText(
+      String(product?.description ?? '').trim() || fallbackDescription,
+      220,
+    );
 
     const safeId = encodeURIComponent(String(id ?? '').trim());
-    const shareUrl = `${apiUrl}/share/raffle/${safeId}`;
     const redirectTo = `${appUrl}/raffle-details/${safeId}`;
+    const image = this.resolveShareImage(product?.imageUrl, this.raffleImage());
 
     return this.sendSharePage(res, {
-      title: `${title} — Tinguilin`,
+      title: `${productTitle} · Tinguilin`,
       description,
       image,
-      url: shareUrl,
+      imageAlt: `${productTitle} sur Tinguilin`,
+      url: redirectTo,
       redirectTo,
     });
   }
@@ -73,7 +73,6 @@ export class ShareController {
     }
 
     const appUrl = this.appOrigin();
-    const apiUrl = this.apiOrigin();
     const user: any = await this.userModel
       .findOne({ referralCode: normalizedCode })
       .select('firstName lastName referralCode')
@@ -81,18 +80,21 @@ export class ShareController {
 
     const inviter = this.fullName(user);
     const title = inviter
-      ? `${inviter} t'invite sur Tinguilin`
+      ? `${inviter} t'invite à gagner sur Tinguilin`
       : 'Invitation Tinguilin';
-    const description = `Inscris-toi avec le code ${normalizedCode} et participe aux raffles en direct sur Tinguilin.`;
+    const description = this.metaText(
+      `Inscris-toi avec le code ${normalizedCode}, active ton compte et participe aux raffles premium en direct sur Tinguilin.`,
+      220,
+    );
     const encodedCode = encodeURIComponent(normalizedCode);
-    const shareUrl = `${apiUrl}/share/referral/${encodedCode}`;
     const redirectTo = `${appUrl}/auth/register?ref=${encodedCode}&referralCode=${encodedCode}`;
 
     return this.sendSharePage(res, {
       title,
       description,
-      image: this.defaultImage(),
-      url: shareUrl,
+      image: this.referralImage(),
+      imageAlt: 'Invitation parrainage Tinguilin',
+      url: redirectTo,
       redirectTo,
     });
   }
@@ -100,18 +102,16 @@ export class ShareController {
   @Get('site')
   shareSite(@Query('to') to: string | undefined, @Res() res: Response) {
     const appUrl = this.appOrigin();
-    const apiUrl = this.apiOrigin();
     const path = this.normalizeAppPath(to);
-    const query = path !== '/landing' ? `?to=${encodeURIComponent(path)}` : '';
-    const shareUrl = `${apiUrl}/share/site${query}`;
     const redirectTo = `${appUrl}${path}`;
+    const meta = this.siteMeta(path);
 
     return this.sendSharePage(res, {
-      title: 'Tinguilin — Raffles en direct',
-      description:
-        'Découvre les tombolas en cours, suis les tirages en direct et tente de gagner ton prochain produit.',
-      image: this.defaultImage(),
-      url: shareUrl,
+      title: meta.title,
+      description: meta.description,
+      image: meta.image,
+      imageAlt: meta.imageAlt,
+      url: redirectTo,
       redirectTo,
     });
   }
@@ -119,14 +119,16 @@ export class ShareController {
   @Get('live')
   shareLive(@Res() res: Response) {
     const appUrl = this.appOrigin();
-    const apiUrl = this.apiOrigin();
 
     return this.sendSharePage(res, {
-      title: 'Tinguilin — Tirages en direct',
-      description:
-        'Suis la sélection des gagnants en temps réel et vois les résultats des tirages en direct.',
-      image: this.defaultImage(),
-      url: `${apiUrl}/share/live`,
+      title: 'Tinguilin · Tirages en direct',
+      description: this.metaText(
+        'Suis les tirages en direct, vois les résultats en temps réel et découvre les gagnants instantanément sur Tinguilin.',
+        220,
+      ),
+      image: this.liveImage(),
+      imageAlt: 'Tirages en direct Tinguilin',
+      url: `${appUrl}/tabs/winners`,
       redirectTo: `${appUrl}/tabs/winners`,
     });
   }
@@ -137,6 +139,7 @@ export class ShareController {
       title: string;
       description: string;
       image: string;
+      imageAlt?: string;
       url: string;
       redirectTo: string;
     },
@@ -192,19 +195,100 @@ export class ShareController {
   }
 
   private defaultImage(): string {
-    const configured = String(
-      process.env.PUBLIC_SHARE_IMAGE_URL || process.env.OG_IMAGE_URL || '',
-    ).trim();
+    const configured = process.env.PUBLIC_SHARE_IMAGE_URL || process.env.OG_IMAGE_URL;
+    return this.resolveShareImage(configured, `${this.appOrigin()}/assets/img/placeholder.png`);
+  }
 
-    if (configured) {
-      if (/^https?:\/\//i.test(configured)) return configured;
-      if (configured.startsWith('/')) {
-        return `${this.appOrigin()}${configured}`;
-      }
-      return `${this.appOrigin()}/${configured.replace(/^\/+/, '')}`;
+  private referralImage(): string {
+    return this.resolveShareImage(
+      process.env.PUBLIC_REFERRAL_SHARE_IMAGE_URL || '/assets/img/referal.jpg',
+      this.defaultImage(),
+    );
+  }
+
+  private raffleImage(): string {
+    return this.resolveShareImage(
+      process.env.PUBLIC_RAFFLE_SHARE_IMAGE_URL,
+      this.defaultImage(),
+    );
+  }
+
+  private liveImage(): string {
+    return this.resolveShareImage(
+      process.env.PUBLIC_LIVE_SHARE_IMAGE_URL,
+      this.defaultImage(),
+    );
+  }
+
+  private siteImage(): string {
+    return this.resolveShareImage(
+      process.env.PUBLIC_SITE_SHARE_IMAGE_URL,
+      this.defaultImage(),
+    );
+  }
+
+  private resolveShareImage(raw: any, fallback: string): string {
+    const value = String(raw ?? '').trim();
+    if (!value) return fallback;
+    if (/^https?:\/\//i.test(value)) return value;
+    if (value.startsWith('/uploads/')) return `${this.apiOrigin()}${value}`;
+    if (value.startsWith('uploads/')) return `${this.apiOrigin()}/${value}`;
+    if (value.startsWith('/assets/')) return `${this.appOrigin()}${value}`;
+    if (value.startsWith('assets/')) return `${this.appOrigin()}/${value}`;
+    return fallback;
+  }
+
+  private metaText(raw: string, maxLen = 200): string {
+    const clean = String(raw ?? '')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!clean) return 'Tinguilin';
+    if (clean.length <= maxLen) return clean;
+    return `${clean.slice(0, Math.max(0, maxLen - 1)).trim()}…`;
+  }
+
+  private siteMeta(path: string): {
+    title: string;
+    description: string;
+    image: string;
+    imageAlt: string;
+  } {
+    const normalized = String(path ?? '').trim().toLowerCase();
+
+    if (normalized.includes('/tabs/winners')) {
+      return {
+        title: 'Tinguilin · Gagnants & résultats',
+        description: this.metaText(
+          'Consulte les gagnants, les résultats récents et les tirages validés sur Tinguilin.',
+          210,
+        ),
+        image: this.liveImage(),
+        imageAlt: 'Gagnants Tinguilin',
+      };
     }
 
-    return `${this.appOrigin()}/assets/img/placeholder.png`;
+    if (normalized.includes('/auth/register')) {
+      return {
+        title: 'Tinguilin · Inscription rapide',
+        description: this.metaText(
+          'Crée ton compte en quelques secondes et rejoins les raffles premium de Tinguilin.',
+          210,
+        ),
+        image: this.referralImage(),
+        imageAlt: 'Inscription Tinguilin',
+      };
+    }
+
+    return {
+      title: 'Tinguilin · Raffles premium en direct',
+      description: this.metaText(
+        'Participe aux raffles en direct, suis les tirages en temps réel et gagne des produits premium sur Tinguilin.',
+        210,
+      ),
+      image: this.siteImage(),
+      imageAlt: 'Page d’accueil Tinguilin',
+    };
   }
 
   private normalizeAppPath(raw?: string): string {
@@ -241,12 +325,14 @@ function buildShareHtml(input: {
   title: string;
   description: string;
   image: string;
+  imageAlt?: string;
   url: string;
   redirectTo: string;
 }) {
   const title = esc(input.title);
   const description = esc(input.description);
   const image = esc(input.image);
+  const imageAlt = esc(input.imageAlt || 'Tinguilin');
   const url = esc(input.url);
   const redirectTo = esc(input.redirectTo);
   const redirectToJs = escJs(input.redirectTo);
@@ -258,6 +344,7 @@ function buildShareHtml(input: {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${title}</title>
   <meta name="description" content="${description}" />
+  <meta name="robots" content="noindex, nofollow" />
 
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="Tinguilin" />
@@ -265,12 +352,16 @@ function buildShareHtml(input: {
   <meta property="og:title" content="${title}" />
   <meta property="og:description" content="${description}" />
   <meta property="og:image" content="${image}" />
+  <meta property="og:image:alt" content="${imageAlt}" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
   <meta property="og:url" content="${url}" />
 
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="${title}" />
   <meta name="twitter:description" content="${description}" />
   <meta name="twitter:image" content="${image}" />
+  <meta name="twitter:image:alt" content="${imageAlt}" />
 
   <link rel="canonical" href="${url}" />
   <script>window.location.replace("${redirectToJs}");</script>

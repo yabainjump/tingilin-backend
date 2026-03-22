@@ -67,6 +67,8 @@ describe('ShareController', () => {
     const html = String(res.send.mock.calls[0][0]);
     expect(html).toContain('http://localhost:8100/raffle-details/abc123');
     expect(html).not.toContain('/tabs/raffle-details/abc123');
+    expect(html).toContain('http://localhost:3000/public/test.jpg');
+    expect(html).toContain('<meta property="og:url" content="http://localhost:8100/raffle-details/abc123" />');
   });
 
   it('builds referral share page redirecting to register with prefilled code', async () => {
@@ -88,8 +90,7 @@ describe('ShareController', () => {
     expect(html).toContain(
       'http://localhost:8100/auth/register?ref=WIN-PWV95M&referralCode=WIN-PWV95M',
     );
-    expect(html).toContain('http://localhost:8100/assets/img/placeholder.png');
-    expect(html).toContain('http://localhost:3000/share/referral/WIN-PWV95M');
+    expect(html).toContain('http://localhost:8100/assets/img/referal.jpg');
   });
 
   it('infers frontend origin from backend host when PUBLIC_APP_URL is missing', async () => {
@@ -113,7 +114,21 @@ describe('ShareController', () => {
       'https://tinguilin.yaba-in.com/auth/register?ref=WIN-PWV95M&referralCode=WIN-PWV95M',
     );
     expect(html).toContain(
-      'https://tinguilin.yaba-in.com/assets/img/placeholder.png',
+      'https://tinguilin.yaba-in.com/assets/img/referal.jpg',
     );
+  });
+
+  it('builds site share page with professional metadata', async () => {
+    process.env.PUBLIC_APP_URL = 'https://tinguilin.yaba-in.com';
+    process.env.PUBLIC_API_URL = 'https://backend.tinguilin.yaba-in.com';
+    process.env.PUBLIC_SITE_SHARE_IMAGE_URL = '/assets/img/Asset_6.png';
+
+    const res = createResponseMock();
+    controller.shareSite('/landing', res as any);
+
+    const html = String(res.send.mock.calls[0][0]);
+    expect(html).toContain('Tinguilin · Raffles premium en direct');
+    expect(html).toContain('https://tinguilin.yaba-in.com/assets/img/Asset_6.png');
+    expect(html).toContain('https://tinguilin.yaba-in.com/landing');
   });
 });
