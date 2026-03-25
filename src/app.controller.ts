@@ -1,12 +1,27 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Query,
+  ServiceUnavailableException,
+  UseGuards,
+} from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { InjectConnection } from '@nestjs/mongoose';
 import { AppService } from './app.service';
 import { Roles } from './common/decorators/roles.decorator';
 import { RolesGuard } from './common/guards/roles.guard';
 import { PaymentsService } from './modules/payments/payments.service';
 import { RafflesService } from './modules/raffles/raffles.service';
 import { UsersService } from './modules/users/users.service';
+import { Connection } from 'mongoose';
+
+const MONGOOSE_STATES: Record<number, string> = {
+  0: 'disconnected',
+  1: 'connected',
+  2: 'connecting',
+  3: 'disconnecting',
+};
 
 @ApiTags('System')
 @Controller()
@@ -16,11 +31,56 @@ export class AppController {
     private readonly usersService: UsersService,
     private readonly paymentsService: PaymentsService,
     private readonly rafflesService: RafflesService,
+    @InjectConnection() private readonly mongoConnection: Connection,
   ) {}
 
   @Get()
   getHello(): string {
     return this.appService.getHello();
+  }
+
+  @ApiOperation({
+    summary: 'Liveness probe',
+    description: 'Lightweight endpoint for load balancers and uptime probes.',
+  })
+  @Get('health')
+  health() {
+    return {
+      status: 'ok',
+      service: 'tingilin-api',
+      now: new Date().toISOString(),
+      uptimeSec: Math.floor(process.uptime()),
+      pid: process.pid,
+    };
+  }
+
+  @ApiOperation({
+    summary: 'Readiness probe',
+    description: 'Returns 503 until MongoDB is connected and API is ready to serve traffic.',
+  })
+  @Get('health/ready')
+  readiness() {
+    const stateCode = this.mongoConnection.readyState;
+    const stateLabel = MONGOOSE_STATES[stateCode] ?? 'unknown';
+    const mongoReady = stateCode === 1;
+
+    const payload = {
+      status: mongoReady ? 'ready' : 'not_ready',
+      checks: {
+        mongo: {
+          status: mongoReady ? 'up' : 'down',
+          state: stateLabel,
+          stateCode,
+        },
+      },
+      now: new Date().toISOString(),
+    };
+
+    if (!mongoReady) {
+      throw new ServiceUnavailableException(payload);
+    }
+
+    return payload;
   }
 
   @ApiBearerAuth('access-token')

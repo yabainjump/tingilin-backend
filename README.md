@@ -88,6 +88,21 @@ npm run test
 npm run test:e2e
 ```
 
+## Deploiement production (Nginx/HAProxy + PM2)
+
+Une stack de deploiement complete est disponible dans `deploy/`:
+
+- `deploy/pm2/ecosystem.config.cjs` (instances Node multiples)
+- `deploy/nginx/backend.tinguilin.yaba-in.com.conf` (LB + sticky Socket.IO)
+- `deploy/haproxy/haproxy.cfg` (alternative HAProxy)
+- `deploy/scripts/deploy.sh` (build + reload + probe)
+
+Guide detaille:
+
+```text
+deploy/README.md
+```
+
 ## CORS local
 
 Actuellement, le backend autorise `http://localhost:8100` dans `src/main.ts`.
@@ -195,4 +210,3 @@ Pour les tests locaux rapides, utilisez le provider `MOCK`:
 - `431 Request Header Fields Too Large`: token JWT invalide/trop gros cote frontend. Vider le localStorage puis se reconnecter.
 - `CORS blocked`: verifier que le frontend tourne bien sur `http://localhost:8100` ou mettre a jour `main.ts`.
 - `Mongo connection error`: verifier `MONGO_URI` et que le conteneur Mongo tourne.
-

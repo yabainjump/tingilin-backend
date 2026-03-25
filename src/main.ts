@@ -10,11 +10,54 @@ async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule);
   const apiPrefix = 'api/v1';
+  const parseInteger = (value: string, fallback: number) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+  };
+
+  const resolveTrustProxy = (rawValue: string): boolean | number | string => {
+    const normalized = rawValue.trim().toLowerCase();
+
+    if (!normalized) return false;
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+
+    const numericValue = Number(normalized);
+    if (Number.isFinite(numericValue) && numericValue >= 0) {
+      return Math.floor(numericValue);
+    }
+
+    return rawValue.trim();
+  };
+
+  const trustProxyRaw = String(process.env.TRUST_PROXY || process.env.TRUST_PROXY_HOPS || '1');
+  const trustProxy = resolveTrustProxy(trustProxyRaw);
+  const expressApp = app.getHttpAdapter().getInstance();
+  expressApp.set('trust proxy', trustProxy);
+  app.enableShutdownHooks();
+  expressApp.disable('x-powered-by');
+  logger.log(`Trust proxy configured: ${String(trustProxy)}`);
+
+  const httpServer: any = app.getHttpServer();
+  httpServer.keepAliveTimeout = parseInteger(
+    String(process.env.HTTP_KEEP_ALIVE_TIMEOUT_MS || '65000'),
+    65000,
+  );
+  httpServer.headersTimeout = parseInteger(
+    String(process.env.HTTP_HEADERS_TIMEOUT_MS || '66000'),
+    66000,
+  );
+  httpServer.requestTimeout = parseInteger(
+    String(process.env.HTTP_REQUEST_TIMEOUT_MS || '120000'),
+    120000,
+  );
 
   app.setGlobalPrefix(apiPrefix, {
     exclude: [
       { path: 'share', method: RequestMethod.ALL },
-      { path: 'share/(.*)', method: RequestMethod.ALL },
+      { path: 'share/*path', method: RequestMethod.ALL },
+      { path: 'health', method: RequestMethod.ALL },
+      { path: 'health/*path', method: RequestMethod.ALL },
     ],
   });
 

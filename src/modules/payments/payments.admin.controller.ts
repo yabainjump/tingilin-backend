@@ -21,8 +21,14 @@ export class PaymentsAdminController {
   @Get('dashboard-analytics')
   dashboardAnalytics(
     @Query('granularity') granularity?: 'DAY' | 'MONTH' | 'YEAR',
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
   ) {
-    return this.paymentsService.adminDashboardAnalytics({ granularity });
+    return this.paymentsService.adminDashboardAnalytics({
+      granularity,
+      dateFrom,
+      dateTo,
+    });
   }
 
   @Get('transactions')

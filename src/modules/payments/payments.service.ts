@@ -66,8 +66,90 @@ export class PaymentsService {
     return 'DAY';
   }
 
-  private buildDashboardRange(granularity: DashboardGranularity): DashboardRange {
+  private dashboardBucketFormat(granularity: DashboardGranularity): string {
+    if (granularity === 'YEAR') return '%Y';
+    if (granularity === 'MONTH') return '%Y-%m';
+    return '%Y-%m-%d %H';
+  }
+
+  private parseDashboardDateInput(raw: string, fieldName: 'dateFrom' | 'dateTo'): Date {
+    const parsed = new Date(String(raw ?? '').trim());
+    if (Number.isNaN(parsed.getTime())) {
+      throw new BadRequestException(`Invalid ${fieldName}`);
+    }
+    return parsed;
+  }
+
+  private buildCustomRangeLabel(
+    granularity: DashboardGranularity,
+    from: Date,
+    to: Date,
+  ): string {
+    if (granularity === 'YEAR') {
+      const yearFormatter = new Intl.DateTimeFormat('fr-FR', {
+        timeZone: this.analyticsTimezone,
+        year: 'numeric',
+      });
+      return `${yearFormatter.format(from)} -> ${yearFormatter.format(to)}`;
+    }
+
+    if (granularity === 'MONTH') {
+      const monthFormatter = new Intl.DateTimeFormat('fr-FR', {
+        timeZone: this.analyticsTimezone,
+        month: '2-digit',
+        year: 'numeric',
+      });
+      return `${monthFormatter.format(from)} -> ${monthFormatter.format(to)}`;
+    }
+
+    const dateTimeFormatter = new Intl.DateTimeFormat('fr-FR', {
+      timeZone: this.analyticsTimezone,
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    return `${dateTimeFormatter.format(from)} -> ${dateTimeFormatter.format(to)}`;
+  }
+
+  private buildDashboardRange(
+    granularity: DashboardGranularity,
+    dateFromRaw?: string,
+    dateToRaw?: string,
+  ): DashboardRange {
     const now = new Date();
+    const customFromRaw = String(dateFromRaw ?? '').trim();
+    const customToRaw = String(dateToRaw ?? '').trim();
+    const hasCustomFrom = customFromRaw.length > 0;
+    const hasCustomTo = customToRaw.length > 0;
+
+    if (hasCustomFrom !== hasCustomTo) {
+      throw new BadRequestException('dateFrom and dateTo must be provided together');
+    }
+
+    if (hasCustomFrom && hasCustomTo) {
+      const from = this.parseDashboardDateInput(customFromRaw, 'dateFrom');
+      const to = this.parseDashboardDateInput(customToRaw, 'dateTo');
+
+      if (from.getTime() > to.getTime()) {
+        throw new BadRequestException('dateFrom must be less than or equal to dateTo');
+      }
+
+      const durationMs = to.getTime() - from.getTime() + 1;
+      const previousTo = new Date(from.getTime() - 1);
+      const previousFrom = new Date(previousTo.getTime() - durationMs + 1);
+
+      return {
+        from,
+        to,
+        previousFrom,
+        previousTo,
+        bucketFormat: this.dashboardBucketFormat(granularity),
+        label: this.buildCustomRangeLabel(granularity, from, to),
+      };
+    }
 
     if (granularity === 'MONTH') {
       const to = now;
@@ -83,7 +165,7 @@ export class PaymentsService {
         to,
         previousFrom,
         previousTo,
-        bucketFormat: '%Y-%m',
+        bucketFormat: this.dashboardBucketFormat(granularity),
         label: '12 derniers mois',
       };
     }
@@ -100,28 +182,24 @@ export class PaymentsService {
         to,
         previousFrom,
         previousTo,
-        bucketFormat: '%Y',
+        bucketFormat: this.dashboardBucketFormat(granularity),
         label: '5 dernieres annees',
       };
     }
 
-    const days = 30;
     const to = now;
-    const from = new Date(now);
-    from.setUTCDate(from.getUTCDate() - (days - 1));
-    from.setUTCHours(0, 0, 0, 0);
+    const from = new Date(now.getTime() - 23 * 60 * 60 * 1000);
 
     const previousTo = new Date(from.getTime() - 1);
-    const previousFrom = new Date(from);
-    previousFrom.setUTCDate(previousFrom.getUTCDate() - days);
+    const previousFrom = new Date(previousTo.getTime() - (to.getTime() - from.getTime()));
 
     return {
       from,
       to,
       previousFrom,
       previousTo,
-      bucketFormat: '%Y-%m-%d',
-      label: '30 derniers jours',
+      bucketFormat: this.dashboardBucketFormat(granularity),
+      label: '24 dernieres heures',
     };
   }
 
@@ -161,20 +239,24 @@ export class PaymentsService {
     year: string;
     month: string;
     day: string;
+    hour: string;
   } {
     const formatter = new Intl.DateTimeFormat('en-CA', {
       timeZone: this.analyticsTimezone,
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
+      hour: '2-digit',
+      hour12: false,
     });
     const parts = formatter.formatToParts(date);
 
     const year = parts.find((p) => p.type === 'year')?.value ?? '0000';
     const month = parts.find((p) => p.type === 'month')?.value ?? '01';
     const day = parts.find((p) => p.type === 'day')?.value ?? '01';
+    const hour = parts.find((p) => p.type === 'hour')?.value ?? '00';
 
-    return { year, month, day };
+    return { year, month, day, hour };
   }
 
   private toBucketKey(date: Date, granularity: DashboardGranularity): string {
@@ -185,7 +267,7 @@ export class PaymentsService {
     if (granularity === 'MONTH') {
       return `${parts.year}-${parts.month}`;
     }
-    return `${parts.year}-${parts.month}-${parts.day}`;
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}`;
   }
 
   private toBucketLabel(key: string, granularity: DashboardGranularity): string {
@@ -196,8 +278,11 @@ export class PaymentsService {
       const [year, month] = key.split('-');
       return `${month}/${year}`;
     }
-    const [year, month, day] = key.split('-');
-    return `${day}/${month}/${year?.slice(-2)}`;
+
+    const [datePart = '', hourPart = '00'] = key.split(' ');
+    const [year, month, day] = datePart.split('-');
+    const hour = String(hourPart ?? '00').slice(0, 2);
+    return `${day}/${month}/${year?.slice(-2)} ${hour}h`;
   }
 
   private buildBucketKeys(
@@ -216,7 +301,7 @@ export class PaymentsService {
       } else if (granularity === 'MONTH') {
         cursor.setUTCMonth(cursor.getUTCMonth() + 1);
       } else {
-        cursor.setUTCDate(cursor.getUTCDate() + 1);
+        cursor.setUTCHours(cursor.getUTCHours() + 1);
       }
     }
 
@@ -619,9 +704,15 @@ export class PaymentsService {
 
   async adminDashboardAnalytics(params?: {
     granularity?: string;
+    dateFrom?: string;
+    dateTo?: string;
   }) {
     const granularity = this.parseDashboardGranularity(params?.granularity);
-    const range = this.buildDashboardRange(granularity);
+    const range = this.buildDashboardRange(
+      granularity,
+      params?.dateFrom,
+      params?.dateTo,
+    );
 
     const [currentKpis, previousKpis, seriesRows, providerRows, topRafflesRaw, recent] =
       await Promise.all([
