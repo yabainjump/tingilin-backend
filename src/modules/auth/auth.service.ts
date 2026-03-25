@@ -18,6 +18,12 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { InviteUserDto } from './dto/invite-user.dto';
 import { AuditService } from '../audit/audit.service';
 
+type MailDeliveryResult = {
+  delivered: boolean;
+  reason: 'EMAIL_SENT' | 'SMTP_CONFIG_MISSING' | 'SMTP_SEND_FAILED';
+  errorMessage?: string;
+};
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -460,7 +466,7 @@ export class AuthService {
     input.user.passwordResetAttempts = 0;
     await input.user.save();
 
-    const delivered =
+    const deliveryResult =
       input.emailType === 'INVITE'
         ? await this.sendInvitationPasswordSetupEmail(
             input.user.email,
@@ -475,9 +481,9 @@ export class AuthService {
             ttlMinutes,
           );
 
-    if (!delivered) {
+    if (!deliveryResult.delivered) {
       this.logger.warn(
-        `[${input.emailType}] SMTP non configuré, code reset pour ${input.user.email}: ${code}`,
+        `[${input.emailType}] Email non envoyé (${deliveryResult.reason}) pour ${input.user.email}${deliveryResult.errorMessage ? `: ${deliveryResult.errorMessage}` : ''}`,
       );
     }
 
@@ -489,7 +495,8 @@ export class AuthService {
     return {
       ...input.genericResponse,
       expiresInSeconds: ttlMinutes * 60,
-      delivery: delivered ? 'EMAIL' : 'LOG',
+      delivery: deliveryResult.delivered ? 'EMAIL' : 'LOG',
+      deliveryReason: deliveryResult.reason,
       ...(debugEnabled ? { devResetCode: code } : {}),
     };
   }
@@ -511,32 +518,20 @@ export class AuthService {
     firstName: string,
     code: string,
     ttlMinutes: number,
-  ): Promise<boolean> {
-    const host = String(this.config.get<string>('SMTP_HOST', '')).trim();
-    const port = Number(this.config.get<string>('SMTP_PORT', '587'));
-    const secure =
-      String(this.config.get<string>('SMTP_SECURE', 'false'))
-        .trim()
-        .toLowerCase() === 'true';
-    const user = String(this.config.get<string>('SMTP_USER', '')).trim();
-    const pass = String(this.config.get<string>('SMTP_PASS', '')).trim();
+  ): Promise<MailDeliveryResult> {
+    const smtp = this.buildSmtpTransporter();
     const from =
       String(this.config.get<string>('MAIL_FROM', '')).trim() ||
       'Tingilin <no-reply@tingilin.local>';
 
-    if (!host || !user || !pass) return false;
+    if (!smtp.transporter) {
+      return { delivered: false, reason: smtp.reason ?? 'SMTP_CONFIG_MISSING' };
+    }
 
     try {
-      const transporter = nodemailer.createTransport({
-        host,
-        port,
-        secure,
-        auth: { user, pass },
-      });
-
       const appName = String(this.config.get<string>('APP_NAME', 'Tingilin'));
 
-      await transporter.sendMail({
+      await smtp.transporter.sendMail({
         from,
         to: toEmail,
         subject: `${appName} - Code de réinitialisation`,
@@ -553,12 +548,16 @@ export class AuthService {
         `,
       });
 
-      return true;
+      return { delivered: true, reason: 'EMAIL_SENT' };
     } catch (error: any) {
       this.logger.error(
         `Envoi email reset échoué (${toEmail}): ${error?.message ?? error}`,
       );
-      return false;
+      return {
+        delivered: false,
+        reason: 'SMTP_SEND_FAILED',
+        errorMessage: String(error?.message ?? error),
+      };
     }
   }
 
@@ -567,32 +566,20 @@ export class AuthService {
     firstName: string,
     code: string,
     ttlMinutes: number,
-  ): Promise<boolean> {
-    const host = String(this.config.get<string>('SMTP_HOST', '')).trim();
-    const port = Number(this.config.get<string>('SMTP_PORT', '587'));
-    const secure =
-      String(this.config.get<string>('SMTP_SECURE', 'false'))
-        .trim()
-        .toLowerCase() === 'true';
-    const user = String(this.config.get<string>('SMTP_USER', '')).trim();
-    const pass = String(this.config.get<string>('SMTP_PASS', '')).trim();
+  ): Promise<MailDeliveryResult> {
+    const smtp = this.buildSmtpTransporter();
     const from =
       String(this.config.get<string>('MAIL_FROM', '')).trim() ||
       'Tingilin <no-reply@tingilin.local>';
 
-    if (!host || !user || !pass) return false;
+    if (!smtp.transporter) {
+      return { delivered: false, reason: smtp.reason ?? 'SMTP_CONFIG_MISSING' };
+    }
 
     try {
-      const transporter = nodemailer.createTransport({
-        host,
-        port,
-        secure,
-        auth: { user, pass },
-      });
-
       const appName = String(this.config.get<string>('APP_NAME', 'Tingilin'));
 
-      await transporter.sendMail({
+      await smtp.transporter.sendMail({
         from,
         to: toEmail,
         subject: `${appName} - Invitation de compte`,
@@ -610,12 +597,55 @@ export class AuthService {
         `,
       });
 
-      return true;
+      return { delivered: true, reason: 'EMAIL_SENT' };
     } catch (error: any) {
       this.logger.error(
         `Envoi email invitation échoué (${toEmail}): ${error?.message ?? error}`,
       );
-      return false;
+      return {
+        delivered: false,
+        reason: 'SMTP_SEND_FAILED',
+        errorMessage: String(error?.message ?? error),
+      };
     }
+  }
+
+  private buildSmtpTransporter(): {
+    transporter: nodemailer.Transporter | null;
+    reason?: 'SMTP_CONFIG_MISSING';
+  } {
+    const host = String(this.config.get<string>('SMTP_HOST', '')).trim();
+    const port = Number(this.config.get<string>('SMTP_PORT', '587'));
+    const secure =
+      String(this.config.get<string>('SMTP_SECURE', 'false'))
+        .trim()
+        .toLowerCase() === 'true';
+    const user = String(this.config.get<string>('SMTP_USER', '')).trim();
+    const pass = String(this.config.get<string>('SMTP_PASS', '')).trim();
+    const service = String(this.config.get<string>('SMTP_SERVICE', '')).trim();
+    const tlsRejectUnauthorized =
+      String(this.config.get<string>('SMTP_TLS_REJECT_UNAUTHORIZED', 'true'))
+        .trim()
+        .toLowerCase() !== 'false';
+
+    if ((!host && !service) || !user || !pass) {
+      return { transporter: null, reason: 'SMTP_CONFIG_MISSING' };
+    }
+
+    const transporter = nodemailer.createTransport({
+      ...(service
+        ? { service }
+        : {
+            host,
+            port,
+            secure,
+          }),
+      auth: { user, pass },
+      tls: {
+        rejectUnauthorized: tlsRejectUnauthorized,
+      },
+    });
+
+    return { transporter };
   }
 }
