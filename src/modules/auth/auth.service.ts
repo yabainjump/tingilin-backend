@@ -649,6 +649,9 @@ export class AuthService {
       String(this.config.get<string>('SMTP_TLS_REJECT_UNAUTHORIZED', 'true'))
         .trim()
         .toLowerCase() !== 'false';
+    const tlsServername = String(
+      this.config.get<string>('SMTP_TLS_SERVERNAME', ''),
+    ).trim();
 
     if ((!host && !service) || !user || !pass) {
       return { transporter: null, reason: 'SMTP_CONFIG_MISSING' };
@@ -671,6 +674,7 @@ export class AuthService {
       auth: { user, pass },
       tls: {
         rejectUnauthorized: tlsRejectUnauthorized,
+        ...(tlsServername ? { servername: tlsServername } : {}),
       },
     });
 

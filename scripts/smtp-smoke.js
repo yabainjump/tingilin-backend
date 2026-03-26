@@ -56,6 +56,7 @@ async function main() {
   const pass = stripQuotes(env.SMTP_PASS || '').replace(/\s+/g, '');
   const tlsRejectUnauthorized =
     String(stripQuotes(env.SMTP_TLS_REJECT_UNAUTHORIZED || 'true')).toLowerCase() !== 'false';
+  const tlsServername = stripQuotes(env.SMTP_TLS_SERVERNAME || '');
 
   if ((!host && !service) || !user || !pass) {
     console.error('SMTP config missing or invalid.');
@@ -79,14 +80,20 @@ async function main() {
     ? {
         service,
         auth: { user, pass },
-        tls: { rejectUnauthorized: tlsRejectUnauthorized },
+        tls: {
+          rejectUnauthorized: tlsRejectUnauthorized,
+          ...(tlsServername ? { servername: tlsServername } : {}),
+        },
       }
     : {
         host,
         port,
         secure,
         auth: { user, pass },
-        tls: { rejectUnauthorized: tlsRejectUnauthorized },
+        tls: {
+          rejectUnauthorized: tlsRejectUnauthorized,
+          ...(tlsServername ? { servername: tlsServername } : {}),
+        },
       };
 
   const transporter = nodemailer.createTransport(transportOptions);
