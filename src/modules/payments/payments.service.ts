@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   Injectable,
   NotFoundException,
@@ -609,12 +610,49 @@ export class PaymentsService {
         senderName: digikuntzInput!.senderName,
       });
 
+      const providerTransactionId = this.firstNonEmpty(
+        payin?.id,
+        payin?.transactionId,
+        payin?.providerTransactionId,
+      );
+      const providerRef = this.firstNonEmpty(
+        payin?.transactionRef,
+        payin?.providerRef,
+        payin?.reference,
+        payin?.ref,
+      );
+      const paymentLink = this.firstNonEmpty(
+        payin?.paymentLink,
+        payin?.payment_url,
+        payin?.url,
+        payin?.link,
+      );
+      const providerStatus = this.firstNonEmpty(
+        payin?.status,
+        payin?.state,
+        'PENDING',
+      );
+      const paymentWithTaxes = Number(
+        payin?.paymentWithTaxes ??
+          payin?.amountWithTaxes ??
+          payin?.amount_with_taxes ??
+          0,
+      );
+
+      if (!providerTransactionId && !providerRef && !paymentLink) {
+        throw new BadGatewayException(
+          'Digikuntz createPayin returned an invalid response payload',
+        );
+      }
+
       tx.provider = 'DIGIKUNTZ';
-      tx.providerTransactionId = payin.id;
-      tx.providerRef = payin.transactionRef;
-      tx.paymentLink = payin.paymentLink;
-      tx.paymentWithTaxes = Number(payin.paymentWithTaxes ?? 0);
-      tx.rawProviderStatus = payin.status;
+      tx.providerTransactionId = providerTransactionId || undefined;
+      tx.providerRef = providerRef || undefined;
+      tx.paymentLink = paymentLink || undefined;
+      tx.paymentWithTaxes = Number.isFinite(paymentWithTaxes)
+        ? paymentWithTaxes
+        : 0;
+      tx.rawProviderStatus = providerStatus;
       await tx.save();
     }
 

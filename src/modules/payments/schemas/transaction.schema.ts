@@ -25,7 +25,7 @@ export class Transaction {
   provider: string;
 
   @Prop({ type: String, required: false, default: undefined })
-  providerRef: string;
+  providerRef?: string;
 
   @Prop({ type: String, required: false, default: undefined })
   idempotencyKey?: string;
