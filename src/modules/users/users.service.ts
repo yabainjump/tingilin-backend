@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -132,21 +133,43 @@ export class UsersService {
     const phone = params.phone.replace(/\s|-/g, '').trim();
     const referralCode = await this.generateUniqueReferralCode();
 
-    return this.userModel.create({
-      email,
-      username: username || email.split('@')[0],
-      passwordHash: params.passwordHash,
-      firstName,
-      lastName,
-      phone,
-      avatar: this.normalizeAvatar(params.avatar),
-      role: params.role ?? 'USER',
-      referralCode,
-      referredBy:
-        params.referredBy && Types.ObjectId.isValid(params.referredBy)
-          ? new Types.ObjectId(params.referredBy)
-          : null,
-    });
+    try {
+      return await this.userModel.create({
+        email,
+        username: username || email.split('@')[0],
+        passwordHash: params.passwordHash,
+        firstName,
+        lastName,
+        phone,
+        avatar: this.normalizeAvatar(params.avatar),
+        role: params.role ?? 'USER',
+        referralCode,
+        referredBy:
+          params.referredBy && Types.ObjectId.isValid(params.referredBy)
+            ? new Types.ObjectId(params.referredBy)
+            : null,
+      });
+    } catch (error: any) {
+      const code = Number(error?.code ?? 0);
+      if (code === 11000) {
+        const keyPattern = error?.keyPattern ?? {};
+        const duplicatedFields = Object.keys(keyPattern);
+
+        if (duplicatedFields.includes('email')) {
+          throw new ConflictException('Email already in use');
+        }
+        if (duplicatedFields.includes('phone')) {
+          throw new ConflictException('Phone already in use');
+        }
+        if (duplicatedFields.includes('referralCode')) {
+          throw new ConflictException('Please retry registration');
+        }
+
+        throw new ConflictException('Duplicate user data detected');
+      }
+
+      throw error;
+    }
   }
 
   private buildRawReferralCode(): string {

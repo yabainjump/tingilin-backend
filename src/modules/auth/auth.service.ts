@@ -37,9 +37,12 @@ export class AuthService {
 
   async register(dto: RegisterDto) {
     const email = dto.email.toLowerCase();
+    const phone = String(dto.phone ?? '').replace(/\s|-/g, '').trim();
 
     const existing = await this.usersService.findByEmail(email);
     if (existing) throw new ConflictException('Email already in use');
+    const existingPhone = await this.usersService.findByPhone(phone);
+    if (existingPhone) throw new ConflictException('Phone already in use');
 
     let referredBy: string | null = null;
     const referralCode = String(dto.referralCode ?? '')
@@ -74,7 +77,7 @@ export class AuthService {
       passwordHash,
       firstName: dto.firstName,
       lastName: dto.lastName,
-      phone: dto.phone,
+      phone,
       avatar: dto.avatar,
       referredBy,
       role: roleForNewUser,
