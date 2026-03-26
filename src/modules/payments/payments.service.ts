@@ -404,6 +404,24 @@ export class PaymentsService {
     return value.toLowerCase();
   }
 
+  private firstNonEmpty(...values: Array<string | null | undefined>): string {
+    for (const value of values) {
+      const normalized = String(value ?? '').trim();
+      if (
+        normalized &&
+        normalized.toLowerCase() !== 'null' &&
+        normalized.toLowerCase() !== 'undefined'
+      ) {
+        return normalized;
+      }
+    }
+    return '';
+  }
+
+  private normalizePhone(input?: string | null): string {
+    return String(input ?? '').replace(/\s|-/g, '').trim();
+  }
+
   private buildIntentResponse(tx: any, ticketUnitPrice: number, idempotent = false) {
     return {
       transactionId: tx._id.toString(),
@@ -486,13 +504,49 @@ export class PaymentsService {
     }
     const quantity = amount / unit;
     const provider = dto.provider ?? 'MOCK';
+    let digikuntzInput:
+      | {
+          userEmail: string;
+          userPhone: string;
+          userCountry: string;
+          senderName: string;
+        }
+      | undefined;
 
     if (provider === 'DIGIKUNTZ') {
-      if (!dto.userEmail || !dto.userPhone || !dto.userCountry || !dto.senderName) {
+      const user = await this.usersService.findById(userId);
+      const fallbackSenderName = this.firstNonEmpty(
+        `${String((user as any)?.firstName ?? '').trim()} ${String((user as any)?.lastName ?? '').trim()}`.trim(),
+        String((user as any)?.username ?? '').trim(),
+        'Tingilin User',
+      );
+      const defaultCountry = this.firstNonEmpty(
+        String(this.config.get<string>('DIGIKUNTZ_DEFAULT_COUNTRY', '')).trim(),
+        'CM',
+      );
+
+      const userEmail = this.firstNonEmpty(
+        dto.userEmail,
+        String((user as any)?.email ?? '').trim(),
+      );
+      const userPhone = this.normalizePhone(
+        this.firstNonEmpty(dto.userPhone, String((user as any)?.phone ?? '').trim()),
+      );
+      const userCountry = this.firstNonEmpty(dto.userCountry, defaultCountry);
+      const senderName = this.firstNonEmpty(dto.senderName, fallbackSenderName);
+
+      if (!userEmail || !userPhone || !userCountry || !senderName) {
         throw new BadRequestException(
           'DIGIKUNTZ requires userEmail, userPhone, userCountry, senderName',
         );
       }
+
+      digikuntzInput = {
+        userEmail,
+        userPhone,
+        userCountry,
+        senderName,
+      };
     }
 
     const idempotencyKey = this.normalizeIdempotencyKey(dto.idempotencyKey);
@@ -547,12 +601,12 @@ export class PaymentsService {
 
     if (provider === 'DIGIKUNTZ') {
       const payin = await this.digikuntz.createPayin({
-        amount: dto.amount,
+        amount,
         reason: `TINGILIN|${tx._id.toString()}|${dto.raffleId}|${userId}|qty:${quantity}`,
-        userEmail: dto.userEmail!,
-        userPhone: dto.userPhone!,
-        userCountry: dto.userCountry!,
-        senderName: dto.senderName!,
+        userEmail: digikuntzInput!.userEmail,
+        userPhone: digikuntzInput!.userPhone,
+        userCountry: digikuntzInput!.userCountry,
+        senderName: digikuntzInput!.senderName,
       });
 
       tx.provider = 'DIGIKUNTZ';
