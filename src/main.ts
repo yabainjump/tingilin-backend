@@ -130,7 +130,10 @@ async function bootstrap() {
 
   const appName = String(process.env.APP_NAME || 'Tingilin API').trim();
   const appUrl = String(process.env.APP_URL || '').trim().replace(/\/$/, '');
-  const appPort = Number(process.env.APP_PORT || 3000);
+  const listenPort = parseInteger(
+    String(process.env.PORT || process.env.APP_PORT || '3000'),
+    3000,
+  );
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle(appName)
@@ -145,7 +148,9 @@ async function bootstrap() {
     )
     .setVersion(process.env.npm_package_version || '1.0.0')
     .addServer(
-      appUrl ? `${appUrl}/${apiPrefix}` : `http://localhost:${appPort}/${apiPrefix}`,
+      appUrl
+        ? `${appUrl}/${apiPrefix}`
+        : `http://localhost:${listenPort}/${apiPrefix}`,
       appUrl ? 'Current environment' : 'Local development',
     )
     .addTag('System', 'Health-style endpoints and cross-module utilities.')
@@ -225,8 +230,10 @@ async function bootstrap() {
     `,
   });
 
-  logger.log(`Swagger UI available at ${appUrl || `http://localhost:${appPort}`}/api-docs`);
+  logger.log(
+    `Swagger UI available at ${appUrl || `http://localhost:${listenPort}`}/api-docs`,
+  );
 
-  await app.listen(process.env.APP_PORT || 3000);
+  await app.listen(listenPort);
 }
 bootstrap();
