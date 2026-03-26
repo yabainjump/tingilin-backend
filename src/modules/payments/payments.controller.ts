@@ -1,4 +1,13 @@
-import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  HttpException,
+  InternalServerErrorException,
+  Logger,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CreateIntentDto } from './dto/create-intent.dto';
@@ -14,11 +23,24 @@ import { CreateFreeTicketDto } from './dto/create-free-ticket.dto';
 @UseGuards(AuthGuard('jwt'))
 @Controller('payments')
 export class PaymentsController {
+  private readonly logger = new Logger(PaymentsController.name);
+
   constructor(private readonly paymentsService: PaymentsService) {}
 
   @Post('intent')
-  createIntent(@Req() req: any, @Body() dto: CreateIntentDto) {
-    return this.paymentsService.createIntent(req.user.sub, dto);
+  async createIntent(@Req() req: any, @Body() dto: CreateIntentDto) {
+    try {
+      return await this.paymentsService.createIntent(req.user.sub, dto);
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+
+      const message = String(error?.message ?? 'Unknown error').slice(0, 240);
+      this.logger.error(
+        `createIntent unexpected failure for user=${String(req?.user?.sub ?? '')}: ${message}`,
+        error?.stack,
+      );
+      throw new InternalServerErrorException(`PAYMENT_INTENT_FAILED: ${message}`);
+    }
   }
 
   @Post('mock/confirm')

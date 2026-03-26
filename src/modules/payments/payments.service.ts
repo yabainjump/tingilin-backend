@@ -1,6 +1,7 @@
 import {
   BadGatewayException,
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -423,6 +424,23 @@ export class PaymentsService {
     return String(input ?? '').replace(/\s|-/g, '').trim();
   }
 
+  private rethrowPersistenceError(error: any): never {
+    const code = Number(error?.code ?? 0);
+    const message = String(error?.message ?? '').trim();
+
+    if (code === 11000) {
+      throw new ConflictException(
+        'Duplicate payment reference detected. Please retry in a few seconds.',
+      );
+    }
+
+    if (/validation failed/i.test(message)) {
+      throw new BadRequestException(`Invalid payment payload: ${message}`);
+    }
+
+    throw error;
+  }
+
   private buildIntentResponse(tx: any, ticketUnitPrice: number, idempotent = false) {
     return {
       transactionId: tx._id.toString(),
@@ -589,16 +607,21 @@ export class PaymentsService {
       );
     }
 
-    const tx = await this.txModel.create({
-      userId: new Types.ObjectId(userId),
-      raffleId: new Types.ObjectId(dto.raffleId),
-      quantity,
-      amount,
-      currency: raffle.currency ?? 'XAF',
-      provider,
-      status: 'PENDING',
-      idempotencyKey: idempotencyKey ?? undefined,
-    });
+    let tx: TransactionDocument;
+    try {
+      tx = await this.txModel.create({
+        userId: new Types.ObjectId(userId),
+        raffleId: new Types.ObjectId(dto.raffleId),
+        quantity,
+        amount,
+        currency: raffle.currency ?? 'XAF',
+        provider,
+        status: 'PENDING',
+        idempotencyKey: idempotencyKey ?? undefined,
+      });
+    } catch (error) {
+      this.rethrowPersistenceError(error);
+    }
 
     if (provider === 'DIGIKUNTZ') {
       const payin = await this.digikuntz.createPayin({
@@ -653,7 +676,11 @@ export class PaymentsService {
         ? paymentWithTaxes
         : 0;
       tx.rawProviderStatus = providerStatus;
-      await tx.save();
+      try {
+        await tx.save();
+      } catch (error) {
+        this.rethrowPersistenceError(error);
+      }
     }
 
     return this.buildIntentResponse(tx, unit);
