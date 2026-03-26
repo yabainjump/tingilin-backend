@@ -275,7 +275,16 @@ export class AuthService {
     };
 
     // Anti-enumeration: do not reveal if user exists.
-    if (!user) return genericResponse;
+    if (!user) {
+      if (this.isPasswordResetDebugEnabled()) {
+        return {
+          ...genericResponse,
+          delivery: 'LOG',
+          deliveryReason: 'USER_NOT_FOUND',
+        };
+      }
+      return genericResponse;
+    }
     return this.dispatchPasswordSetupCode({
       user,
       genericResponse,
@@ -490,10 +499,7 @@ export class AuthService {
       );
     }
 
-    const debugEnabled =
-      String(this.config.get<string>('PASSWORD_RESET_DEBUG_RESPONSE', 'false'))
-        .trim()
-        .toLowerCase() === 'true';
+    const debugEnabled = this.isPasswordResetDebugEnabled();
 
     return {
       ...input.genericResponse,
@@ -502,6 +508,14 @@ export class AuthService {
       deliveryReason: deliveryResult.reason,
       ...(debugEnabled ? { devResetCode: code } : {}),
     };
+  }
+
+  private isPasswordResetDebugEnabled(): boolean {
+    return (
+      String(this.config.get<string>('PASSWORD_RESET_DEBUG_RESPONSE', 'false'))
+        .trim()
+        .toLowerCase() === 'true'
+    );
   }
 
   private generateResetCode(): string {
@@ -623,8 +637,13 @@ export class AuthService {
       String(this.config.get<string>('SMTP_SECURE', 'false'))
         .trim()
         .toLowerCase() === 'true';
-    const user = String(this.config.get<string>('SMTP_USER', '')).trim();
-    const pass = String(this.config.get<string>('SMTP_PASS', '')).trim();
+    const mailFrom = String(this.config.get<string>('MAIL_FROM', '')).trim();
+    const userRaw = String(this.config.get<string>('SMTP_USER', '')).trim();
+    const userFromMailFrom = this.extractEmailFromMailbox(mailFrom);
+    const user = this.normalizeSmtpUser(userRaw, userFromMailFrom);
+    const pass = String(this.config.get<string>('SMTP_PASS', ''))
+      .replace(/\s+/g, '')
+      .trim();
     const service = String(this.config.get<string>('SMTP_SERVICE', '')).trim();
     const tlsRejectUnauthorized =
       String(this.config.get<string>('SMTP_TLS_REJECT_UNAUTHORIZED', 'true'))
@@ -633,6 +652,12 @@ export class AuthService {
 
     if ((!host && !service) || !user || !pass) {
       return { transporter: null, reason: 'SMTP_CONFIG_MISSING' };
+    }
+
+    if (!userRaw.includes('@') && userFromMailFrom) {
+      this.logger.warn(
+        `SMTP_USER appears invalid ("${userRaw}"). Falling back to MAIL_FROM email "${userFromMailFrom}".`,
+      );
     }
 
     const transporter = nodemailer.createTransport({
@@ -650,5 +675,27 @@ export class AuthService {
     });
 
     return { transporter };
+  }
+
+  private normalizeSmtpUser(userRaw: string, fallbackEmail: string): string {
+    const user = String(userRaw ?? '').trim();
+    if (user.includes('@')) return user;
+    return fallbackEmail;
+  }
+
+  private extractEmailFromMailbox(value: string): string {
+    const raw = String(value ?? '').trim();
+    if (!raw) return '';
+
+    const angleMatch = raw.match(/<([^>]+)>/);
+    if (angleMatch?.[1]) {
+      return String(angleMatch[1]).trim().toLowerCase();
+    }
+
+    if (raw.includes('@')) {
+      return raw.toLowerCase();
+    }
+
+    return '';
   }
 }
