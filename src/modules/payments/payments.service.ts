@@ -429,8 +429,23 @@ export class PaymentsService {
     const message = String(error?.message ?? '').trim();
 
     if (code === 11000) {
+      const keyPattern = error?.keyPattern ?? {};
+      const conflictKeys = Object.keys(keyPattern).filter(Boolean);
+      const conflictHint = conflictKeys.length
+        ? ` (${conflictKeys.join(', ')})`
+        : '';
+
+      if (
+        conflictKeys.includes('idempotencyKey') ||
+        /idempotencyKey/i.test(message)
+      ) {
+        throw new ConflictException(
+          `Duplicate payment request detected${conflictHint}. Please wait a few seconds and retry.`,
+        );
+      }
+
       throw new ConflictException(
-        'Duplicate payment reference detected. Please retry in a few seconds.',
+        `Duplicate payment reference detected${conflictHint}. Please retry in a few seconds.`,
       );
     }
 
@@ -678,7 +693,35 @@ export class PaymentsService {
       tx.rawProviderStatus = providerStatus;
       try {
         await tx.save();
-      } catch (error) {
+      } catch (error: any) {
+        const duplicateKey = Number(error?.code ?? 0) === 11000;
+        if (duplicateKey) {
+          const orFilters: any[] = [];
+          if (providerTransactionId) {
+            orFilters.push({
+              provider: 'DIGIKUNTZ',
+              providerTransactionId,
+            });
+          }
+          if (providerRef) {
+            orFilters.push({
+              provider: 'DIGIKUNTZ',
+              providerRef,
+            });
+          }
+
+          if (orFilters.length > 0) {
+            const existing = await this.txModel
+              .findOne({ $or: orFilters })
+              .sort({ createdAt: -1 })
+              .exec();
+
+            if (existing && existing.userId.toString() === userId) {
+              return this.buildIntentResponse(existing, unit, true);
+            }
+          }
+        }
+
         this.rethrowPersistenceError(error);
       }
     }
