@@ -75,4 +75,11 @@ export class AuthController {
   refresh(@Body() dto: RefreshTokenDto) {
     return this.authService.refresh(dto.refresh_token);
   }
+
+  @ApiBearerAuth('access-token')
+  @UseGuards(AuthGuard('jwt'))
+  @Post('logout')
+  logout(@Request() req: any) {
+    return this.authService.logout(String(req.user?.sub ?? ''));
+  }
 }

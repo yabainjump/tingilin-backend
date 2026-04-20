@@ -44,6 +44,11 @@ type LiveDrawPayload = {
   recent: LiveWinnerDto[];
 };
 
+type CachedValue<T> = {
+  expiresAt: number;
+  value: T;
+};
+
 @Injectable()
 @WebSocketGateway({
   namespace: '/live-draws',
@@ -68,6 +73,8 @@ export class RafflesLiveGateway
   private tickCursor = 0;
   private analysisProgress = 22;
   private timer?: NodeJS.Timeout;
+  private recentWinnersCache?: CachedValue<LiveWinnerDto[]>;
+  private liveTicketsCache?: CachedValue<string[]>;
 
   constructor(
     @InjectModel(Raffle.name)
@@ -80,7 +87,7 @@ export class RafflesLiveGateway
   onModuleInit() {
     this.timer = setInterval(() => {
       void this.broadcastUpdate();
-    }, 1800);
+    }, 3000);
   }
 
   onModuleDestroy() {
@@ -111,6 +118,10 @@ export class RafflesLiveGateway
   }
 
   private async broadcastUpdate() {
+    if (this.viewerIds.size === 0) {
+      return;
+    }
+
     try {
       const payload = await this.buildPayload();
       this.server.emit('live_draw:update', payload);
@@ -156,14 +167,29 @@ export class RafflesLiveGateway
   }
 
   private async fetchRecentWinners(): Promise<LiveWinnerDto[]> {
+    if (
+      this.recentWinnersCache &&
+      this.recentWinnersCache.expiresAt > Date.now()
+    ) {
+      return this.recentWinnersCache.value;
+    }
+
     const res: any = await this.rafflesService
       .listWinnersPublic(9)
       .catch(() => ({ data: [] }));
     const list = Array.isArray(res?.data) ? res.data : [];
+    this.recentWinnersCache = {
+      expiresAt: Date.now() + 15_000,
+      value: list,
+    };
     return list;
   }
 
   private async fetchLiveTickets(): Promise<string[]> {
+    if (this.liveTicketsCache && this.liveTicketsCache.expiresAt > Date.now()) {
+      return this.liveTicketsCache.value;
+    }
+
     const now = new Date();
     const live: any = await this.raffleModel
       .findOne({
@@ -175,7 +201,13 @@ export class RafflesLiveGateway
       .lean()
       .exec();
 
-    if (!live?._id) return [];
+    if (!live?._id) {
+      this.liveTicketsCache = {
+        expiresAt: Date.now() + 6_000,
+        value: [],
+      };
+      return [];
+    }
 
     const raffleId = new Types.ObjectId(String(live._id));
     const sample: Array<{ serial?: string; userId?: Types.ObjectId }> =
@@ -187,10 +219,17 @@ export class RafflesLiveGateway
         ])
         .exec();
 
-    return sample
+    const tickets = sample
       .map((x) => this.toTicketCode(x?.serial))
       .map((x) => x.trim().toUpperCase())
       .filter(Boolean);
+
+    this.liveTicketsCache = {
+      expiresAt: Date.now() + 6_000,
+      value: tickets,
+    };
+
+    return tickets;
   }
 
   private toTicketCode(serial?: string | null): string {

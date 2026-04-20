@@ -6,6 +6,10 @@ import { json, static as expressStatic, urlencoded } from 'express';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
 
+type RawBodyCarrier = {
+  rawBody?: Buffer;
+};
+
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule);
@@ -13,6 +17,15 @@ async function bootstrap() {
   const parseInteger = (value: string, fallback: number) => {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+  };
+  const parseBoolean = (value: string | undefined, fallback: boolean) => {
+    const normalized = String(value ?? '').trim().toLowerCase();
+
+    if (!normalized) return fallback;
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+
+    return fallback;
   };
 
   const resolveTrustProxy = (rawValue: string): boolean | number | string => {
@@ -32,6 +45,16 @@ async function bootstrap() {
 
   const trustProxyRaw = String(process.env.TRUST_PROXY || process.env.TRUST_PROXY_HOPS || '1');
   const trustProxy = resolveTrustProxy(trustProxyRaw);
+  const isProductionEnv =
+    String(process.env.NODE_ENV ?? '').trim().toLowerCase() === 'production';
+  const jsonBodyLimit = String(process.env.HTTP_JSON_BODY_LIMIT || '2mb').trim() || '2mb';
+  const formBodyLimit = String(process.env.HTTP_FORM_BODY_LIMIT || '1mb').trim() || '1mb';
+  const uploadsCacheMaxAge =
+    String(process.env.UPLOADS_CACHE_MAX_AGE || '30d').trim() || '30d';
+  const enableSwagger = parseBoolean(
+    process.env.ENABLE_SWAGGER,
+    !isProductionEnv,
+  );
   const expressApp = app.getHttpAdapter().getInstance();
   expressApp.set('trust proxy', trustProxy);
   app.enableShutdownHooks();
@@ -69,12 +92,27 @@ async function bootstrap() {
     }),
   );
 
-  app.use(json({ limit: '50mb' }));
-  app.use(urlencoded({ extended: true, limit: '50mb' }));
+  const attachRawBody = (req: any, _res: unknown, buffer: Buffer) => {
+    if (buffer?.length) {
+      (req as RawBodyCarrier).rawBody = Buffer.from(buffer);
+    }
+  };
+
+  app.use(json({ limit: jsonBodyLimit, verify: attachRawBody }));
+  app.use(urlencoded({ extended: true, limit: formBodyLimit, verify: attachRawBody }));
 
   const uploadsDir = join(process.cwd(), 'uploads');
   mkdirSync(uploadsDir, { recursive: true });
-  app.use('/uploads', expressStatic(uploadsDir));
+  app.use(
+    '/uploads',
+    expressStatic(uploadsDir, {
+      immutable: true,
+      maxAge: uploadsCacheMaxAge,
+      setHeaders: (res) => {
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+      },
+    }),
+  );
 
   const normalizeOrigin = (origin: string) =>
     origin.trim().replace(/\/+$/, '').toLowerCase();
@@ -135,104 +173,108 @@ async function bootstrap() {
     3000,
   );
 
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle(appName)
-    .setDescription(
-      [
-        'Official API documentation for Tingilin.',
-        '',
-        'The API is grouped by public resources, authenticated user flows, administration endpoints, payments, sharing and operational tooling.',
-        '',
-        'Use the `Authorize` button with a valid `Bearer` token for protected routes.',
-      ].join('\n'),
-    )
-    .setVersion(process.env.npm_package_version || '1.0.0')
-    .addServer(
-      appUrl
-        ? `${appUrl}/${apiPrefix}`
-        : `http://localhost:${listenPort}/${apiPrefix}`,
-      appUrl ? 'Current environment' : 'Local development',
-    )
-    .addTag('System', 'Health-style endpoints and cross-module utilities.')
-    .addTag('Authentication', 'Registration, login, token refresh and account bootstrap flows.')
-    .addTag('Users', 'Authenticated user profile, stats and account history.')
-    .addTag('Users Admin', 'Administrative user search, moderation and role management.')
-    .addTag('Products', 'Public product catalogue endpoints.')
-    .addTag('Products Admin', 'Administrative product management and media upload.')
-    .addTag('Raffles', 'Public raffle browsing, winners and mixed raffle endpoints.')
-    .addTag('Raffles Admin', 'Administrative raffle lifecycle, winner management and exports.')
-    .addTag('Tickets', 'Authenticated user ticket access.')
-    .addTag('Payments', 'Authenticated payment initiation and verification.')
-    .addTag('Payments Admin', 'Administrative payment analytics and transaction management.')
-    .addTag('Payments Webhooks', 'Provider callbacks consumed by the payments module.')
-    .addTag('Notifications', 'Authenticated notification feeds and state updates.')
-    .addTag('Share', 'Shareable landing pages and redirects.')
-    .addTag('Audit', 'Administrative audit trail and monitoring endpoints.')
-    .addBearerAuth(
-      {
-        type: 'http',
-        scheme: 'bearer',
-        bearerFormat: 'JWT',
-        description: 'Paste the access token returned by the login flow.',
+  if (enableSwagger) {
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle(appName)
+      .setDescription(
+        [
+          'Official API documentation for Tingilin.',
+          '',
+          'The API is grouped by public resources, authenticated user flows, administration endpoints, payments, sharing and operational tooling.',
+          '',
+          'Use the `Authorize` button with a valid `Bearer` token for protected routes.',
+        ].join('\n'),
+      )
+      .setVersion(process.env.npm_package_version || '1.0.0')
+      .addServer(
+        appUrl
+          ? `${appUrl}/${apiPrefix}`
+          : `http://localhost:${listenPort}/${apiPrefix}`,
+        appUrl ? 'Current environment' : 'Local development',
+      )
+      .addTag('System', 'Health-style endpoints and cross-module utilities.')
+      .addTag('Authentication', 'Registration, login, token refresh and account bootstrap flows.')
+      .addTag('Users', 'Authenticated user profile, stats and account history.')
+      .addTag('Users Admin', 'Administrative user search, moderation and role management.')
+      .addTag('Products', 'Public product catalogue endpoints.')
+      .addTag('Products Admin', 'Administrative product management and media upload.')
+      .addTag('Raffles', 'Public raffle browsing, winners and mixed raffle endpoints.')
+      .addTag('Raffles Admin', 'Administrative raffle lifecycle, winner management and exports.')
+      .addTag('Tickets', 'Authenticated user ticket access.')
+      .addTag('Payments', 'Authenticated payment initiation and verification.')
+      .addTag('Payments Admin', 'Administrative payment analytics and transaction management.')
+      .addTag('Payments Webhooks', 'Provider callbacks consumed by the payments module.')
+      .addTag('Notifications', 'Authenticated notification feeds and state updates.')
+      .addTag('Share', 'Shareable landing pages and redirects.')
+      .addTag('Audit', 'Administrative audit trail and monitoring endpoints.')
+      .addBearerAuth(
+        {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+          description: 'Paste the access token returned by the login flow.',
+        },
+        'access-token',
+      )
+      .addApiKey(
+        {
+          type: 'apiKey',
+          in: 'header',
+          name: 'x-digikuntz-signature',
+          description: 'Signature header expected by Digikuntz webhooks.',
+        },
+        'digikuntz-signature',
+      )
+      .build();
+
+    const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig, {
+      deepScanRoutes: true,
+      operationIdFactory: (controllerKey, methodKey) =>
+        `${controllerKey.replace(/Controller$/, '')}_${methodKey}`,
+    });
+
+    SwaggerModule.setup('api-docs', app, swaggerDocument, {
+      customSiteTitle: `${appName} Docs`,
+      jsonDocumentUrl: 'api-docs/json',
+      yamlDocumentUrl: 'api-docs/yaml',
+      swaggerOptions: {
+        persistAuthorization: true,
+        displayRequestDuration: true,
+        docExpansion: 'none',
+        filter: true,
+        operationsSorter: 'alpha',
+        tagsSorter: 'alpha',
+        defaultModelsExpandDepth: 2,
+        defaultModelExpandDepth: 2,
       },
-      'access-token',
-    )
-    .addApiKey(
-      {
-        type: 'apiKey',
-        in: 'header',
-        name: 'x-digikuntz-signature',
-        description: 'Signature header expected by Digikuntz webhooks.',
-      },
-      'digikuntz-signature',
-    )
-    .build();
+      customCss: `
+        .swagger-ui .topbar { background: linear-gradient(135deg, #07111f 0%, #102544 100%); padding: 0.75rem 0; }
+        .swagger-ui .topbar-wrapper img { display: none; }
+        .swagger-ui .topbar-wrapper::before {
+          content: '${appName}';
+          color: #fff;
+          font-size: 1.1rem;
+          font-weight: 700;
+          letter-spacing: 0.04em;
+        }
+        .swagger-ui .info { margin: 24px 0; }
+        .swagger-ui .info .title { color: #102544; }
+        .swagger-ui .scheme-container { background: #f7f9fc; box-shadow: none; border-radius: 14px; }
+        .swagger-ui .opblock.opblock-post { border-color: #ee7f1d; background: rgba(238, 127, 29, 0.06); }
+        .swagger-ui .opblock.opblock-get { border-color: #1c7ed6; background: rgba(28, 126, 214, 0.06); }
+        .swagger-ui .opblock.opblock-patch { border-color: #2b8a3e; background: rgba(43, 138, 62, 0.06); }
+        .swagger-ui .opblock.opblock-delete { border-color: #c92a2a; background: rgba(201, 42, 42, 0.06); }
+        .swagger-ui .btn.authorize { border-color: #102544; color: #102544; }
+        .swagger-ui .btn.authorize svg { fill: #102544; }
+      `,
+    });
 
-  const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig, {
-    deepScanRoutes: true,
-    operationIdFactory: (controllerKey, methodKey) =>
-      `${controllerKey.replace(/Controller$/, '')}_${methodKey}`,
-  });
-
-  SwaggerModule.setup('api-docs', app, swaggerDocument, {
-    customSiteTitle: `${appName} Docs`,
-    jsonDocumentUrl: 'api-docs/json',
-    yamlDocumentUrl: 'api-docs/yaml',
-    swaggerOptions: {
-      persistAuthorization: true,
-      displayRequestDuration: true,
-      docExpansion: 'none',
-      filter: true,
-      operationsSorter: 'alpha',
-      tagsSorter: 'alpha',
-      defaultModelsExpandDepth: 2,
-      defaultModelExpandDepth: 2,
-    },
-    customCss: `
-      .swagger-ui .topbar { background: linear-gradient(135deg, #07111f 0%, #102544 100%); padding: 0.75rem 0; }
-      .swagger-ui .topbar-wrapper img { display: none; }
-      .swagger-ui .topbar-wrapper::before {
-        content: '${appName}';
-        color: #fff;
-        font-size: 1.1rem;
-        font-weight: 700;
-        letter-spacing: 0.04em;
-      }
-      .swagger-ui .info { margin: 24px 0; }
-      .swagger-ui .info .title { color: #102544; }
-      .swagger-ui .scheme-container { background: #f7f9fc; box-shadow: none; border-radius: 14px; }
-      .swagger-ui .opblock.opblock-post { border-color: #ee7f1d; background: rgba(238, 127, 29, 0.06); }
-      .swagger-ui .opblock.opblock-get { border-color: #1c7ed6; background: rgba(28, 126, 214, 0.06); }
-      .swagger-ui .opblock.opblock-patch { border-color: #2b8a3e; background: rgba(43, 138, 62, 0.06); }
-      .swagger-ui .opblock.opblock-delete { border-color: #c92a2a; background: rgba(201, 42, 42, 0.06); }
-      .swagger-ui .btn.authorize { border-color: #102544; color: #102544; }
-      .swagger-ui .btn.authorize svg { fill: #102544; }
-    `,
-  });
-
-  logger.log(
-    `Swagger UI available at ${appUrl || `http://localhost:${listenPort}`}/api-docs`,
-  );
+    logger.log(
+      `Swagger UI available at ${appUrl || `http://localhost:${listenPort}`}/api-docs`,
+    );
+  } else {
+    logger.log('Swagger UI disabled for this environment.');
+  }
 
   await app.listen(listenPort);
 }

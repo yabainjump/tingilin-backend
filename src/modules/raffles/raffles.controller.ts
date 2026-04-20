@@ -36,6 +36,11 @@ export class RafflesController {
     return this.rafflesService.listForHome();
   }
 
+  @Get('home-feed')
+  homeFeed(@Query('category') category?: string) {
+    return this.rafflesService.getHomeFeed({ category });
+  }
+
   @Get('live')
   listLive() {
     return this.rafflesPublicService.listLive(); 

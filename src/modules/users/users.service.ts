@@ -105,7 +105,12 @@ export class UsersService {
     if (dto.lastName !== undefined) $set.lastName = dto.lastName.trim();
     if (dto.phone !== undefined)
       $set.phone = dto.phone.replace(/\s|-/g, '').trim();
-    if (dto.avatar !== undefined) $set.avatar = this.normalizeAvatar(dto.avatar);
+    if (dto.avatar !== undefined) {
+      if (String(dto.avatar ?? '').trim().startsWith('data:')) {
+        throw new BadRequestException('Use the avatar upload endpoint for images');
+      }
+      $set.avatar = this.normalizeAvatar(dto.avatar);
+    }
 
     const updated = await this.userModel
       .findByIdAndUpdate(id, { $set }, { new: true })

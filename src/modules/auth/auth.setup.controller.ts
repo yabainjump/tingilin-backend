@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { ApiTags } from '@nestjs/swagger';
 import { UsersService } from '../users/users.service';
 import { PromoteAdminDto } from './dto/promote-admin.dto';
+import { isProductionEnv } from '../../common/config/runtime-security';
 
 @ApiTags('Authentication')
 @Controller('auth/setup')
@@ -14,6 +15,10 @@ export class AuthSetupController {
 
   @Post('promote-admin')
   async promoteAdmin(@Body() body: PromoteAdminDto) {
+    if (isProductionEnv(this.config.get<string>('NODE_ENV', 'development'))) {
+      return { ok: false, message: 'Setup endpoint disabled' };
+    }
+
     const setupEnabled =
       String(this.config.get<string>('SETUP_ENABLED', 'false'))
         .trim()

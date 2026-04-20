@@ -8,6 +8,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { AuthSetupController } from './auth.setup.controller';
 import { AuthAdminUsersController } from './auth.admin-users.controller';
 import { AuditModule } from '../audit/audit.module';
+import { getRequiredSecret } from '../../common/config/runtime-security';
 
 @Module({
   imports: [
@@ -18,11 +19,9 @@ import { AuditModule } from '../audit/audit.module';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        secret: config.get<string>(
-          'JWT_ACCESS_SECRET',
-          'CHANGE_ME_ACCESS_SECRET',
-        ),
-        
+        secret: getRequiredSecret(config, 'JWT_ACCESS_SECRET', {
+          minLength: 32,
+        }),
       }),
     }),
   ],

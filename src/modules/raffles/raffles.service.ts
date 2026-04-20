@@ -29,6 +29,7 @@ import {
   ParticipationDocument,
 } from '../participations/schemas/participation.schema';
 import { NotificationsService } from '../notifications/notifications.service';
+import { storeOptimizedImageFromDataUrl } from '../../common/uploads/image-storage';
 
 @Injectable()
 export class RafflesService {
@@ -301,6 +302,19 @@ export class RafflesService {
         badgeType,
       };
     });
+  }
+
+  async getHomeFeed(opts?: { category?: string }) {
+    const category = String(opts?.category ?? '')
+      .trim()
+      .toUpperCase();
+
+    const [endingSoon, liveRows] = await Promise.all([
+      this.listPublic({ limit: 10, sort: 'endAt', category }),
+      this.listPublic({ limit: 30, sort: 'createdAt', category }),
+    ]);
+
+    return { endingSoon, liveRows };
   }
 
   async getPublicDetails(id: string) {
@@ -1024,6 +1038,22 @@ export class RafflesService {
     const categoryId =
       String(dto.product.categoryId ?? 'GENERAL').trim().toUpperCase() ||
       'GENERAL';
+    const imageUrlRaw = String(dto.product.imageUrl ?? '').trim();
+    const imageUrl = imageUrlRaw.startsWith('data:')
+      ? await storeOptimizedImageFromDataUrl({
+          dataUrl: imageUrlRaw,
+          kind: 'products',
+          prefix: String(createdBy),
+          maxWidth: 1600,
+          maxHeight: 1600,
+          fit: 'inside',
+          quality: 82,
+        })
+      : imageUrlRaw;
+
+    if (!imageUrl) {
+      throw new BadRequestException('Product image is required');
+    }
 
     const session = await this.connection.startSession();
     session.startTransaction();
@@ -1034,7 +1064,7 @@ export class RafflesService {
           {
             title: dto.product.title,
             description: dto.product.description ?? '',
-            imageUrl: dto.product.imageUrl,
+            imageUrl,
             categoryId,
             realValue: dto.product.realValue ?? 0,
             createdBy: new Types.ObjectId(createdBy),

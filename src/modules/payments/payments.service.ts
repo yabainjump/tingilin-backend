@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import * as crypto from 'crypto';
 import { RafflesService } from '../raffles/raffles.service';
 import { TicketsService } from '../tickets/tickets.service';
 import { CreateIntentDto } from './dto/create-intent.dto';
@@ -22,6 +23,12 @@ import { RaffleStatus } from '../raffles/schemas/raffle.schema';
 import { UsersService } from '../users/users.service';
 import { CreateFreeTicketDto } from './dto/create-free-ticket.dto';
 import { LedgerEntry, LedgerEntryDocument } from './schemas/ledger-entry.schema';
+import {
+  getRequiredSecret,
+  getWebhookSignatureMode,
+  isProductionEnv,
+  parseBooleanFlag,
+} from '../../common/config/runtime-security';
 
 type DashboardGranularity = 'DAY' | 'MONTH' | 'YEAR';
 
@@ -60,6 +67,15 @@ export class PaymentsService {
     private readonly usersService: UsersService,
     private readonly config: ConfigService,
   ) {}
+
+  mockPaymentsEnabled(): boolean {
+    const explicit = this.config.get<string>('ENABLE_MOCK_PAYMENTS');
+    if (String(explicit ?? '').trim()) {
+      return parseBooleanFlag(explicit, false);
+    }
+
+    return !isProductionEnv(this.config.get<string>('NODE_ENV', 'development'));
+  }
 
   private parseDashboardGranularity(raw?: string): DashboardGranularity {
     const value = String(raw ?? 'DAY').trim().toUpperCase();
@@ -537,7 +553,11 @@ export class PaymentsService {
       throw new BadRequestException(`Amount must be a multiple of ${unit}`);
     }
     const quantity = amount / unit;
-    const provider = dto.provider ?? 'MOCK';
+    const provider = dto.provider ?? (this.mockPaymentsEnabled() ? 'MOCK' : 'DIGIKUNTZ');
+
+    if (provider === 'MOCK' && !this.mockPaymentsEnabled()) {
+      throw new BadRequestException('Mock payments are disabled');
+    }
     let digikuntzInput:
       | {
           userEmail: string;
@@ -730,6 +750,10 @@ export class PaymentsService {
   }
 
   async mockConfirm(userId: string, dto: MockConfirmDto) {
+    if (!this.mockPaymentsEnabled()) {
+      throw new NotFoundException('Mock payments are disabled');
+    }
+
     const tx = await this.txModel.findById(dto.transactionId).exec();
     if (!tx) throw new NotFoundException('Transaction not found');
     if (tx.userId.toString() !== userId)
@@ -1495,6 +1519,10 @@ export class PaymentsService {
   }
 
   async mockFail(userId: string, dto: MockFailDto) {
+    if (!this.mockPaymentsEnabled()) {
+      throw new NotFoundException('Mock payments are disabled');
+    }
+
     const tx = await this.txModel.findById(dto.transactionId).exec();
     if (!tx) throw new NotFoundException('Transaction not found');
     if (tx.userId.toString() !== userId)
@@ -1645,11 +1673,10 @@ export class PaymentsService {
       failReason?: string;
     },
     signature?: string,
+    rawBody?: string,
+    timestamp?: string,
   ) {
-    const secret = String(this.config.get<string>('DIGIKUNTZ_WEBHOOK_SECRET', '')).trim();
-    if (secret && String(signature ?? '').trim() !== secret) {
-      throw new BadRequestException('Invalid webhook signature');
-    }
+    this.assertValidWebhookSignature(rawBody, signature, timestamp);
 
     const transactionId = String(payload?.transactionId ?? '').trim();
     const providerTransactionId = String(payload?.providerTransactionId ?? '').trim();
@@ -1756,5 +1783,74 @@ export class PaymentsService {
 
     await tx.save();
     return { ok: true, transactionId: tx._id.toString(), status: tx.status };
+  }
+
+  private assertValidWebhookSignature(
+    rawBody: string | undefined,
+    signature: string | undefined,
+    timestamp: string | undefined,
+  ): void {
+    const secret = getRequiredSecret(this.config, 'DIGIKUNTZ_WEBHOOK_SECRET', {
+      minLength: 24,
+    });
+    const signatureMode = getWebhookSignatureMode(this.config);
+
+    if (signatureMode === 'legacy-static') {
+      if (!this.timingSafeEqual(secret, String(signature ?? '').trim())) {
+        throw new BadRequestException('Invalid webhook signature');
+      }
+      return;
+    }
+
+    const normalizedRawBody = String(rawBody ?? '');
+    const normalizedSignature = this.normalizeSignatureDigest(signature);
+    const normalizedTimestamp = String(timestamp ?? '').trim();
+
+    if (!normalizedRawBody || !normalizedSignature || !normalizedTimestamp) {
+      throw new BadRequestException('Missing webhook signature data');
+    }
+
+    const timestampMs = Number(normalizedTimestamp) * 1000;
+    if (!Number.isFinite(timestampMs)) {
+      throw new BadRequestException('Invalid webhook timestamp');
+    }
+
+    const toleranceSeconds = Math.max(
+      30,
+      Number(
+        this.config.get<string>('DIGIKUNTZ_WEBHOOK_TOLERANCE_SECONDS', '300'),
+      ) || 300,
+    );
+    const now = Date.now();
+    if (Math.abs(now - timestampMs) > toleranceSeconds * 1000) {
+      throw new BadRequestException('Webhook timestamp expired');
+    }
+
+    const expected = crypto
+      .createHmac('sha256', secret)
+      .update(`${normalizedTimestamp}.${normalizedRawBody}`)
+      .digest('hex');
+
+    if (!this.timingSafeEqual(expected, normalizedSignature)) {
+      throw new BadRequestException('Invalid webhook signature');
+    }
+  }
+
+  private normalizeSignatureDigest(signature?: string): string {
+    return String(signature ?? '')
+      .trim()
+      .replace(/^sha256=/i, '')
+      .toLowerCase();
+  }
+
+  private timingSafeEqual(left: string, right: string): boolean {
+    const leftBuffer = Buffer.from(String(left ?? ''), 'utf8');
+    const rightBuffer = Buffer.from(String(right ?? ''), 'utf8');
+
+    if (leftBuffer.length !== rightBuffer.length) {
+      return false;
+    }
+
+    return crypto.timingSafeEqual(leftBuffer, rightBuffer);
   }
 }

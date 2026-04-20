@@ -8,6 +8,9 @@ export class CreateProductDto {
   @IsString()
   description?: string;
 
+  @IsString()
+  imageUrl: string;
+
   @IsOptional()
   @IsNumber()
   @Min(0)

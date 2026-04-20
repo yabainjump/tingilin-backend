@@ -15,14 +15,13 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
-import { diskStorage } from 'multer';
-import { mkdirSync } from 'fs';
-import { extname, join } from 'path';
+import { memoryStorage } from 'multer';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductsService } from './products.service';
+import { storeOptimizedImageFromBuffer } from '../../common/uploads/image-storage';
 
 @ApiTags('Products Admin')
 @ApiBearerAuth('access-token')
@@ -64,19 +63,8 @@ export class ProductsAdminController {
   })
   @UseInterceptors(
     FileInterceptor('file', {
-      storage: diskStorage({
-        destination: (_req, _file, cb) => {
-          const destination = join(process.cwd(), 'uploads', 'products');
-          mkdirSync(destination, { recursive: true });
-          cb(null, destination);
-        },
-        filename: (_req, file, cb) => {
-          const safeExt = extname(file.originalname || '').toLowerCase() || '.jpg';
-          const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-          cb(null, `product-${unique}${safeExt}`);
-        },
-      }),
-      limits: { fileSize: 8 * 1024 * 1024 },
+      storage: memoryStorage(),
+      limits: { fileSize: 6 * 1024 * 1024 },
       fileFilter: (_req, file, cb) => {
         const mime = String(file.mimetype ?? '').toLowerCase();
         if (!mime.startsWith('image/')) {
@@ -87,14 +75,25 @@ export class ProductsAdminController {
       },
     }),
   )
-  uploadImage(@UploadedFile() file?: any) {
+  async uploadImage(@UploadedFile() file?: any) {
     if (!file) {
       throw new BadRequestException('Image file is required');
     }
 
+    const imageUrl = await storeOptimizedImageFromBuffer({
+      buffer: file.buffer,
+      mimeType: file.mimetype,
+      kind: 'products',
+      prefix: 'product',
+      maxWidth: 1600,
+      maxHeight: 1600,
+      fit: 'inside',
+      quality: 82,
+    });
+
     return {
       ok: true,
-      imageUrl: `/uploads/products/${file.filename}`,
+      imageUrl,
     };
   }
 

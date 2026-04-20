@@ -4,6 +4,7 @@ import {
   HttpException,
   InternalServerErrorException,
   Logger,
+  NotFoundException,
   Post,
   Req,
   UseGuards,
@@ -45,11 +46,17 @@ export class PaymentsController {
 
   @Post('mock/confirm')
   mockConfirm(@Req() req: any, @Body() dto: MockConfirmDto) {
+    if (!this.paymentsService.mockPaymentsEnabled()) {
+      throw new NotFoundException();
+    }
     return this.paymentsService.mockConfirm(req.user.sub, dto);
   }
 
   @Post('mock/fail')
   mockFail(@Req() req: any, @Body() dto: MockFailDto) {
+    if (!this.paymentsService.mockPaymentsEnabled()) {
+      throw new NotFoundException();
+    }
     return this.paymentsService.mockFail(req.user.sub, dto);
   }
 

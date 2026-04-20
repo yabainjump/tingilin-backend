@@ -35,6 +35,7 @@ export class ProductsService {
       createdBy: new Types.ObjectId(createdBy),
       status: dto.status ?? 'DRAFT',
       description: dto.description ?? '',
+      imageUrl: dto.imageUrl,
       category: dto.category ?? 'general',
       marketValue: dto.marketValue ?? 0,
     });

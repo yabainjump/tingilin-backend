@@ -17,6 +17,10 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { InviteUserDto } from './dto/invite-user.dto';
 import { AuditService } from '../audit/audit.service';
+import {
+  getRequiredSecret,
+  isProductionEnv,
+} from '../../common/config/runtime-security';
 
 type MailDeliveryResult = {
   delivered: boolean;
@@ -345,23 +349,28 @@ export class AuthService {
     user.passwordResetCodeExpiresAt = null;
     user.passwordResetRequestedAt = null;
     user.passwordResetAttempts = 0;
+    this.invalidateRefreshState(user, { bumpTokenVersion: true });
     await user.save();
 
     return { ok: true, message: 'Mot de passe réinitialisé avec succès' };
   }
 
-  issueTokens(user: any) {
-   
+  async issueTokens(user: any) {
     const accessPayload: Record<string, any> = {
       sub: user._id.toString(),
       email: user.email,
       role: user.role,
+      ver: Number((user as any)?.tokenVersion ?? 0),
     };
 
+    const refreshJti = crypto.randomUUID();
     const refreshPayload: Record<string, any> = {
       sub: user._id.toString(),
       email: user.email,
       role: user.role,
+      ver: Number((user as any)?.tokenVersion ?? 0),
+      jti: refreshJti,
+      type: 'refresh',
     };
 
     const accessExpires = this.config.get<string>(
@@ -375,20 +384,19 @@ export class AuthService {
     ) as StringValue;
 
     const access_token = this.jwtService.sign(accessPayload, {
-      secret: this.config.get<string>(
-        'JWT_ACCESS_SECRET',
-        'CHANGE_ME_ACCESS_SECRET',
-      ),
+      secret: this.accessSecret(),
       expiresIn: accessExpires,
     });
 
     const refresh_token = this.jwtService.sign(refreshPayload, {
-      secret: this.config.get<string>(
-        'JWT_REFRESH_SECRET',
-        'CHANGE_ME_REFRESH_SECRET',
-      ),
+      secret: this.refreshSecret(),
       expiresIn: refreshExpires,
     });
+
+    (user as any).currentRefreshTokenHash = this.hashRefreshToken(refresh_token);
+    (user as any).currentRefreshTokenJti = refreshJti;
+    (user as any).currentRefreshTokenIssuedAt = new Date();
+    await user.save();
 
     return { access_token, refresh_token };
   }
@@ -398,19 +406,46 @@ export class AuthService {
 
     try {
       const payload = await this.jwtService.verifyAsync(refreshToken, {
-        secret: this.config.get<string>(
-          'JWT_REFRESH_SECRET',
-          'CHANGE_ME_REFRESH_SECRET',
-        ),
+        secret: this.refreshSecret(),
       });
 
-      const user = await this.usersService.findById(payload.sub);
+      if (String(payload?.type ?? '').trim() !== 'refresh') {
+        throw new UnauthorizedException('Invalid refresh token');
+      }
+
+      const user = await this.usersService.findById(String(payload?.sub ?? ''));
       if (!user) throw new UnauthorizedException('User not found');
+      if (String(user.status ?? 'ACTIVE').toUpperCase() !== 'ACTIVE') {
+        throw new UnauthorizedException('Account suspended');
+      }
+
+      const tokenVersion = Number(payload?.ver ?? NaN);
+      const currentVersion = Number((user as any)?.tokenVersion ?? 0);
+      if (!Number.isFinite(tokenVersion) || tokenVersion !== currentVersion) {
+        throw new UnauthorizedException('Refresh token revoked');
+      }
+
+      const tokenJti = String(payload?.jti ?? '').trim();
+      if (!tokenJti || tokenJti !== String((user as any)?.currentRefreshTokenJti ?? '')) {
+        throw new UnauthorizedException('Refresh token revoked');
+      }
+
+      const expectedHash = String((user as any)?.currentRefreshTokenHash ?? '').trim();
+      if (!expectedHash || expectedHash !== this.hashRefreshToken(refreshToken)) {
+        throw new UnauthorizedException('Refresh token revoked');
+      }
 
       return this.issueTokens(user);
     } catch {
       throw new UnauthorizedException('Invalid refresh token');
     }
+  }
+
+  async logout(userId: string) {
+    const user = await this.usersService.findById(userId);
+    this.invalidateRefreshState(user, { bumpTokenVersion: true });
+    await user.save();
+    return { ok: true };
   }
 
   private extractIdentifier(input: {
@@ -511,11 +546,12 @@ export class AuthService {
   }
 
   private isPasswordResetDebugEnabled(): boolean {
-    return (
+    const enabled =
       String(this.config.get<string>('PASSWORD_RESET_DEBUG_RESPONSE', 'false'))
         .trim()
-        .toLowerCase() === 'true'
-    );
+        .toLowerCase() === 'true';
+
+    return enabled && !isProductionEnv(this.config.get<string>('NODE_ENV', 'development'));
   }
 
   private generateResetCode(): string {
@@ -701,5 +737,37 @@ export class AuthService {
     }
 
     return '';
+  }
+
+  private accessSecret(): string {
+    return getRequiredSecret(this.config, 'JWT_ACCESS_SECRET', {
+      minLength: 32,
+    });
+  }
+
+  private refreshSecret(): string {
+    return getRequiredSecret(this.config, 'JWT_REFRESH_SECRET', {
+      minLength: 32,
+    });
+  }
+
+  private hashRefreshToken(refreshToken: string): string {
+    return crypto
+      .createHash('sha256')
+      .update(String(refreshToken ?? ''))
+      .digest('hex');
+  }
+
+  private invalidateRefreshState(
+    user: any,
+    opts?: { bumpTokenVersion?: boolean },
+  ): void {
+    (user as any).currentRefreshTokenHash = null;
+    (user as any).currentRefreshTokenJti = null;
+    (user as any).currentRefreshTokenIssuedAt = null;
+
+    if (opts?.bumpTokenVersion) {
+      (user as any).tokenVersion = Number((user as any).tokenVersion ?? 0) + 1;
+    }
   }
 }

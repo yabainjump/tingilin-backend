@@ -15,9 +15,8 @@ import { UsersService } from './users.service';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
-import { diskStorage } from 'multer';
-import { extname, join } from 'path';
-import { mkdirSync } from 'fs';
+import { memoryStorage } from 'multer';
+import { storeOptimizedImageFromBuffer } from '../../common/uploads/image-storage';
 
 @ApiTags('Users')
 @ApiBearerAuth('access-token')
@@ -59,20 +58,8 @@ export class UsersController {
   })
   @UseInterceptors(
     FileInterceptor('file', {
-      storage: diskStorage({
-        destination: (_req, _file, cb) => {
-          const destination = join(process.cwd(), 'uploads', 'avatars');
-          mkdirSync(destination, { recursive: true });
-          cb(null, destination);
-        },
-        filename: (req: any, file, cb) => {
-          const safeExt = extname(file.originalname || '').toLowerCase() || '.jpg';
-          const userId = String(req.user?.sub ?? 'user').replace(/[^a-zA-Z0-9_-]/g, '');
-          const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-          cb(null, `${userId}-${unique}${safeExt}`);
-        },
-      }),
-      limits: { fileSize: 5 * 1024 * 1024 },
+      storage: memoryStorage(),
+      limits: { fileSize: 4 * 1024 * 1024 },
       fileFilter: (_req, file, cb) => {
         const mime = String(file.mimetype ?? '').toLowerCase();
         if (!mime.startsWith('image/')) {
@@ -88,7 +75,16 @@ export class UsersController {
       throw new BadRequestException('Avatar file is required');
     }
 
-    const avatarPath = `/uploads/avatars/${file.filename}`;
+    const avatarPath = await storeOptimizedImageFromBuffer({
+      buffer: file.buffer,
+      mimeType: file.mimetype,
+      kind: 'avatars',
+      prefix: String(req.user?.sub ?? 'user'),
+      maxWidth: 512,
+      maxHeight: 512,
+      fit: 'cover',
+      quality: 78,
+    });
     const user = await this.usersService.updateMe(req.user?.sub, {
       avatar: avatarPath,
     });

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, OnModuleInit } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller';
@@ -18,6 +18,8 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { ScheduleModule } from '@nestjs/schedule';
 import { AuditModule } from './modules/audit/audit.module';
 import { setServers as setDnsServers } from 'dns';
+import { ConfigService } from '@nestjs/config';
+import { assertRuntimeSecurityConfig } from './common/config/runtime-security';
 
 const customDnsServers = String(process.env.DNS_SERVERS ?? '')
   .split(',')
@@ -59,4 +61,10 @@ try {
     },
   ],
 })
-export class AppModule {}
+export class AppModule implements OnModuleInit {
+  constructor(private readonly config: ConfigService) {}
+
+  onModuleInit(): void {
+    assertRuntimeSecurityConfig(this.config);
+  }
+}

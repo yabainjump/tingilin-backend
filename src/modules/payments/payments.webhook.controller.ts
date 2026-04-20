@@ -1,4 +1,4 @@
-import { Body, Controller, Headers, Post } from '@nestjs/common';
+import { Body, Controller, Headers, Post, Req } from '@nestjs/common';
 import { ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { PaymentsService } from './payments.service';
 import { DigikuntzWebhookDto } from './dto/digikuntz-webhook.dto';
@@ -11,9 +11,16 @@ export class PaymentsWebhookController {
 
   @Post('webhook')
   webhook(
+    @Req() req: any,
     @Body() body: DigikuntzWebhookDto,
     @Headers('x-digikuntz-signature') signature?: string,
+    @Headers('x-digikuntz-timestamp') timestamp?: string,
   ) {
-    return this.paymentsService.processDigikuntzWebhook(body, signature);
+    return this.paymentsService.processDigikuntzWebhook(
+      body,
+      signature,
+      String(req?.rawBody?.toString?.('utf8') ?? ''),
+      timestamp,
+    );
   }
 }

@@ -106,6 +106,18 @@ export class User {
 
   @Prop({ type: Date, default: null })
   lastLoginAt?: Date | null;
+
+  @Prop({ type: Number, default: 0 })
+  tokenVersion?: number;
+
+  @Prop({ type: String, default: null })
+  currentRefreshTokenHash?: string | null;
+
+  @Prop({ type: String, default: null })
+  currentRefreshTokenJti?: string | null;
+
+  @Prop({ type: Date, default: null })
+  currentRefreshTokenIssuedAt?: Date | null;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
