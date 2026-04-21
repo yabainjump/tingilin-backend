@@ -16,6 +16,21 @@ This folder contains a production-ready template to run `tingilin-api` with:
 For a shared cPanel Node environment, horizontal scaling is very limited.  
 Use this setup on a VM where you control Nginx/HAProxy + PM2.
 
+## cPanel + Passenger note
+
+If you deploy on cPanel with Passenger instead of PM2:
+
+- configure the application startup file to `app.js`
+- keep your real environment in `.env`
+- rebuild the app, then restart Passenger with `touch tmp/restart.txt`
+- use `deploy/scripts/deploy-cpanel-passenger.sh` as a safer deployment base
+
+Important:
+
+- Passenger startup failures usually come from a crashing Node app, not from `curl`
+- if your `.env` still contains placeholder secrets like `CHANGE_ME_*`, the backend now refuses to start on purpose
+- under Nginx + Passenger, `.htaccess` is generally not the source of truth for the Node app startup
+
 ## 2. Backend environment (minimum)
 
 Set these variables on the backend server:
