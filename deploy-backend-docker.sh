@@ -14,9 +14,13 @@ if [ -f .env ]; then
   cp .env "$HOME/env-backups/backend-env-$(date +%F-%H%M%S)"
 fi
 
+if [ -f .htaccess ]; then
+  cp .htaccess "$HOME/env-backups/backend-htaccess-$(date +%F-%H%M%S)"
+fi
+
 git fetch origin "$BRANCH"
 git reset --hard "origin/$BRANCH"
-git clean -fd -e .env -e uploads/
+git clean -fd -e .env -e .htaccess -e uploads/
 
 [ -f .env ] || { echo ".env manquant"; exit 1; }
 [ -f "$COMPOSE_FILE" ] || { echo "$COMPOSE_FILE manquant"; exit 1; }
