@@ -472,6 +472,21 @@ export class PaymentsService {
     throw error;
   }
 
+  private isDuplicateKeyError(error: any, fieldName?: string): boolean {
+    const code = Number(error?.code ?? 0);
+    if (code !== 11000) {
+      return false;
+    }
+
+    if (!fieldName) {
+      return true;
+    }
+
+    const keyPattern = error?.keyPattern ?? {};
+    const message = String(error?.message ?? '');
+    return Boolean(keyPattern?.[fieldName]) || new RegExp(fieldName, 'i').test(message);
+  }
+
   private buildIntentResponse(tx: any, ticketUnitPrice: number, idempotent = false) {
     return {
       transactionId: tx._id.toString(),
@@ -655,6 +670,20 @@ export class PaymentsService {
         idempotencyKey: idempotencyKey ?? undefined,
       });
     } catch (error) {
+      if (idempotencyKey && this.isDuplicateKeyError(error, 'idempotencyKey')) {
+        const existing = await this.txModel
+          .findOne({
+            userId: new Types.ObjectId(userId),
+            idempotencyKey,
+          })
+          .sort({ createdAt: -1 })
+          .exec();
+
+        if (existing) {
+          return this.buildIntentResponse(existing, unit, true);
+        }
+      }
+
       this.rethrowPersistenceError(error);
     }
 

@@ -31,6 +31,39 @@ Important:
 - if your `.env` still contains placeholder secrets like `CHANGE_ME_*`, the backend now refuses to start on purpose
 - under Nginx + Passenger, `.htaccess` is generally not the source of truth for the Node app startup
 
+## cPanel + Docker note
+
+If the server host only provides Node 18 but Docker is available, run the backend in Docker with Node 20 instead of Passenger.
+
+Recommended flow:
+
+```bash
+cd /home/<user>/public_html/backend.tinguilin.yaba-in.com
+sudo bash deploy-backend-docker.sh
+```
+
+Important:
+
+- keep the backend `.env` on the server
+- Docker serves the app on `127.0.0.1:3000`
+- cPanel Nginx should keep its existing `location /` and only override the upstream variable
+- for this environment, use:
+  - `deploy/nginx/cpanel-backend-docker-upstream.conf`
+  - `deploy/nginx/cpanel-backend-socketio.conf`
+
+Typical cPanel include directory:
+
+```bash
+/etc/nginx/conf.d/users/<user>/backend.tinguilin.yaba-in.com/
+```
+
+After adding the files:
+
+```bash
+nginx -t
+systemctl reload nginx
+```
+
 ## 2. Backend environment (minimum)
 
 Set these variables on the backend server:
