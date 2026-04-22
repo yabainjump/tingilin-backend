@@ -931,6 +931,23 @@ export class RafflesService {
       .exec();
   }
 
+  private async pickRandomActiveTicket(
+    raffleId: Types.ObjectId | string,
+  ): Promise<{ _id: Types.ObjectId; userId: Types.ObjectId; serial?: string | null } | null> {
+    const rid =
+      typeof raffleId === 'string' ? new Types.ObjectId(raffleId) : raffleId;
+
+    const [ticket] = await this.ticketModel
+      .aggregate<{ _id: Types.ObjectId; userId: Types.ObjectId; serial?: string | null }>([
+        { $match: { raffleId: rid, status: 'ACTIVE' } },
+        { $sample: { size: 1 } },
+        { $project: { _id: 1, userId: 1, serial: 1 } },
+      ])
+      .exec();
+
+    return ticket ?? null;
+  }
+
   /**
    * Admin draw (manuel). On garde ta logique mais on ajoute:
    * - on set aussi raffle.winner (si ton schema l'a)
@@ -948,22 +965,13 @@ export class RafflesService {
       throw new BadRequestException('Winner already drawn');
     }
 
-    const tickets = await this.ticketModel
-      .find({ raffleId: raffle._id, status: 'ACTIVE' })
-      .select({ _id: 1, userId: 1, serial: 1 })
-      .exec();
-
-    if (!tickets.length) {
+    const winner = await this.pickRandomActiveTicket(raffle._id);
+    if (!winner) {
       throw new BadRequestException('No tickets sold');
     }
 
-    const participantIds = Array.from(
-      new Set(tickets.map((t) => String(t?.userId ?? '').trim()).filter(Boolean)),
-    );
+    const participantIds = await this.participantUserIds(raffle._id);
     await this.notifyDrawStarted(raffle, participantIds);
-
-    const idx = Math.floor(Math.random() * tickets.length);
-    const winner = tickets[idx];
 
     // legacy fields (tu les avais déjà)
     raffle.winnerTicketId = winner._id as any;
@@ -1205,12 +1213,8 @@ export class RafflesService {
       await raffle.save();
     }
 
-    const count = await this.ticketModel.countDocuments({
-      raffleId: raffle._id,
-      status: 'ACTIVE',
-    });
-
-    if (!count) {
+    const ticket = await this.pickRandomActiveTicket(raffle._id);
+    if (!ticket) {
       raffle.status = RaffleStatus.CLOSED;
       raffle.winner = null;
       await raffle.save();
@@ -1219,14 +1223,6 @@ export class RafflesService {
 
     const participantIds = await this.participantUserIds(raffle._id);
     await this.notifyDrawStarted(raffle, participantIds);
-
-    const skip = Math.floor(Math.random() * count);
-    const ticket = await this.ticketModel
-      .findOne({ raffleId: raffle._id, status: 'ACTIVE' })
-      .skip(skip)
-      .exec();
-
-    if (!ticket) throw new BadRequestException('No ticket selected');
 
     // marquer le ticket gagnant (si ton enum TicketStatus l'accepte)
     await this.ticketModel
