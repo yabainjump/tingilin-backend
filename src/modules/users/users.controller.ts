@@ -109,4 +109,24 @@ export class UsersController {
   referralSummary(@Req() req: any) {
     return this.usersService.getReferralSummary(req.user.sub);
   }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('me/referrals')
+  referrals(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const parsedPage = Math.max(parseInt(page ?? '1', 10) || 1, 1);
+    const parsedLimit = Math.min(
+      Math.max(parseInt(limit ?? '10', 10) || 10, 1),
+      50,
+    );
+
+    return this.usersService.getMyReferrals(
+      req.user.sub,
+      parsedPage,
+      parsedLimit,
+    );
+  }
 }

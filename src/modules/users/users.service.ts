@@ -675,20 +675,11 @@ export class UsersService {
       if (!user) throw new NotFoundException('User not found');
     }
 
-    const [qualifiedReferrals, allReferred, playedRaffles] = await Promise.all([
+    const [qualifiedReferrals, playedRaffles] = await Promise.all([
       this.userModel.countDocuments({
         referredBy: uid,
         referralQualified: true,
       }),
-      this.userModel
-        .find({ referredBy: uid })
-        .select(
-          '_id firstName lastName avatar referralQualified referralQualifiedAt createdAt',
-        )
-        .sort({ createdAt: -1 })
-        .limit(100)
-        .lean()
-        .exec(),
       this.ticketModel.distinct('raffleId', { userId: uid }),
     ]);
 
@@ -734,16 +725,49 @@ export class UsersService {
         progress: loyaltyProgress,
         rewardsGranted: Number(user.loyaltyRewardsGranted ?? 0),
       },
-      referrals: allReferred.map((r: any) => ({
-        userId: String(r._id),
-        firstName: r.firstName,
-        lastName: r.lastName,
-        avatar: this.normalizeAvatar(r.avatar),
-        active: Boolean(r.referralQualified),
-        qualifiedAt: r.referralQualifiedAt ?? null,
-        createdAt: r.createdAt ?? null,
-      })),
+      referrals: [],
       rewardHistory,
+    };
+  }
+
+  async getMyReferrals(userId: string, page = 1, limit = 10) {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Invalid user id');
+    }
+
+    const uid = new Types.ObjectId(userId);
+    const safePage = Math.max(1, Number(page) || 1);
+    const safeLimit = Math.min(50, Math.max(1, Number(limit) || 10));
+    const skip = (safePage - 1) * safeLimit;
+
+    const [rows, total] = await Promise.all([
+      this.userModel
+        .find({ referredBy: uid })
+        .select(
+          '_id firstName lastName avatar referralQualified referralQualifiedAt createdAt',
+        )
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(safeLimit)
+        .lean()
+        .exec(),
+      this.userModel.countDocuments({ referredBy: uid }).exec(),
+    ]);
+
+    return {
+      data: rows.map((row: any) => ({
+        userId: String(row._id),
+        firstName: row.firstName,
+        lastName: row.lastName,
+        avatar: this.normalizeAvatar(row.avatar),
+        active: Boolean(row.referralQualified),
+        qualifiedAt: row.referralQualifiedAt ?? null,
+        createdAt: row.createdAt ?? null,
+      })),
+      page: safePage,
+      limit: safeLimit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / safeLimit)),
     };
   }
 

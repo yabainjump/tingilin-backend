@@ -1,10 +1,12 @@
 import {
   BadGatewayException,
   BadRequestException,
+  Inject,
   Injectable,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 
 export type DigikuntzStatus =
@@ -20,12 +22,17 @@ export class DigikuntzPaymentsService {
   private readonly userId: string;
   private readonly secretKey: string;
 
-  constructor(private readonly http: HttpService) {
-    this.baseUrl = String(process.env.DIGIKUNTZ_BASE_URL ?? '')
+  constructor(
+    private readonly http: HttpService,
+    @Inject(ConfigService) private readonly config: ConfigService,
+  ) {
+    this.baseUrl = String(this.config.get<string>('DIGIKUNTZ_BASE_URL') ?? '')
       .trim()
       .replace(/\/+$/, '');
-    this.userId = String(process.env.DIGIKUNTZ_USER_ID ?? '').trim();
-    this.secretKey = String(process.env.DIGIKUNTZ_SECRET_KEY ?? '').trim();
+    this.userId = String(this.config.get<string>('DIGIKUNTZ_USER_ID') ?? '').trim();
+    this.secretKey = String(
+      this.config.get<string>('DIGIKUNTZ_SECRET_KEY') ?? '',
+    ).trim();
   }
 
   private requiredEnv(name: string): string {

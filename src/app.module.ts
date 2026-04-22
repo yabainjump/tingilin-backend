@@ -1,4 +1,4 @@
-import { Module, OnModuleInit } from '@nestjs/common';
+import { Logger, Module, OnModuleInit } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller';
@@ -19,26 +19,89 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { AuditModule } from './modules/audit/audit.module';
 import { setServers as setDnsServers } from 'dns';
 import { ConfigService } from '@nestjs/config';
-import { assertRuntimeSecurityConfig } from './common/config/runtime-security';
+import {
+  assertRuntimeSecurityConfig,
+  parseBooleanFlag,
+} from './common/config/runtime-security';
 
 const customDnsServers = String(process.env.DNS_SERVERS ?? '')
   .split(',')
   .map((value) => value.trim())
   .filter(Boolean);
-const dnsServers = customDnsServers.length
-  ? customDnsServers
-  : ['8.8.8.8', '1.1.1.1'];
+const mongoLogger = new Logger('MongoDB');
 
-try {
-  setDnsServers(dnsServers);
-} catch {
-  // Ignore invalid DNS config and keep system resolver.
+if (customDnsServers.length > 0) {
+  try {
+    setDnsServers(customDnsServers);
+  } catch {
+    // Ignore invalid DNS config and keep system resolver.
+  }
 }
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    MongooseModule.forRoot(process.env.MONGO_URI as string),
+    MongooseModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const parseInteger = (value: string | undefined, fallback: number) => {
+          const parsed = Number(value);
+          return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+        };
+        const parseIpFamily = (value: string | undefined): 4 | 6 | undefined => {
+          const normalized = String(value ?? '').trim();
+          if (normalized === '4') return 4;
+          if (normalized === '6') return 6;
+          return undefined;
+        };
+
+        return {
+          uri: String(config.get<string>('MONGO_URI') ?? '').trim(),
+          serverSelectionTimeoutMS: parseInteger(
+            config.get<string>('MONGO_SERVER_SELECTION_TIMEOUT_MS'),
+            10000,
+          ),
+          connectTimeoutMS: parseInteger(
+            config.get<string>('MONGO_CONNECT_TIMEOUT_MS'),
+            10000,
+          ),
+          socketTimeoutMS: parseInteger(
+            config.get<string>('MONGO_SOCKET_TIMEOUT_MS'),
+            45000,
+          ),
+          heartbeatFrequencyMS: parseInteger(
+            config.get<string>('MONGO_HEARTBEAT_FREQUENCY_MS'),
+            10000,
+          ),
+          maxPoolSize: parseInteger(config.get<string>('MONGO_MAX_POOL_SIZE'), 20),
+          minPoolSize: parseInteger(config.get<string>('MONGO_MIN_POOL_SIZE'), 1),
+          retryWrites: parseBooleanFlag(
+            String(config.get<string>('MONGO_RETRY_WRITES') ?? 'true'),
+            true,
+          ),
+          ...(parseIpFamily(config.get<string>('MONGO_IP_FAMILY')) !== undefined
+            ? { family: parseIpFamily(config.get<string>('MONGO_IP_FAMILY')) }
+            : {}),
+          connectionFactory: (connection: any) => {
+            connection.on('connected', () => {
+              mongoLogger.log('MongoDB connected');
+            });
+            connection.on('reconnected', () => {
+              mongoLogger.log('MongoDB reconnected');
+            });
+            connection.on('disconnected', () => {
+              mongoLogger.warn('MongoDB disconnected');
+            });
+            connection.on('error', (error: unknown) => {
+              const message =
+                error instanceof Error ? error.message : String(error ?? 'Unknown MongoDB error');
+              mongoLogger.error(message);
+            });
+            return connection;
+          },
+        };
+      },
+    }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     UsersModule,
     AuthModule,

@@ -70,11 +70,7 @@ export class PaymentsService {
 
   mockPaymentsEnabled(): boolean {
     const explicit = this.config.get<string>('ENABLE_MOCK_PAYMENTS');
-    if (String(explicit ?? '').trim()) {
-      return parseBooleanFlag(explicit, false);
-    }
-
-    return !isProductionEnv(this.config.get<string>('NODE_ENV', 'development'));
+    return parseBooleanFlag(explicit, false);
   }
 
   private parseDashboardGranularity(raw?: string): DashboardGranularity {
@@ -440,6 +436,29 @@ export class PaymentsService {
     return String(input ?? '').replace(/\s|-/g, '').trim();
   }
 
+  private normalizeDigikuntzCountry(input?: string | null): string {
+    const raw = String(input ?? '').trim();
+    if (!raw) {
+      return 'Cameroon';
+    }
+
+    const normalized = raw.toLowerCase();
+    if (normalized === 'cm' || normalized === 'cmr') {
+      return 'Cameroon';
+    }
+    if (normalized === 'cameroun') {
+      return 'Cameroon';
+    }
+
+    return raw;
+  }
+
+  private buildDigikuntzReason(tx: TransactionDocument): string {
+    const txSuffix = tx._id.toString().slice(-8).toUpperCase();
+    const quantity = Math.max(1, Number(tx.quantity ?? 1));
+    return `Tingilin payment ${txSuffix} x${quantity}`;
+  }
+
   private rethrowPersistenceError(error: any): never {
     const code = Number(error?.code ?? 0);
     const message = String(error?.message ?? '').trim();
@@ -501,6 +520,28 @@ export class PaymentsService {
         tx.paymentWithTaxes !== undefined ? Number(tx.paymentWithTaxes) : undefined,
       idempotent,
     };
+  }
+
+  private async findRecentMatchingIntent(params: {
+    userId: string;
+    raffleId: string;
+    amount: number;
+    provider: string;
+    lookbackMinutes?: number;
+  }): Promise<TransactionDocument | null> {
+    const lookbackMinutes = Math.max(1, Number(params.lookbackMinutes ?? 15) || 15);
+    const since = new Date(Date.now() - lookbackMinutes * 60 * 1000);
+
+    return this.txModel
+      .findOne({
+        userId: new Types.ObjectId(params.userId),
+        raffleId: new Types.ObjectId(params.raffleId),
+        amount: params.amount,
+        provider: params.provider,
+        createdAt: { $gte: since },
+      })
+      .sort({ createdAt: -1 })
+      .exec();
   }
 
   private async appendLedgerCashIn(tx: TransactionDocument) {
@@ -568,7 +609,9 @@ export class PaymentsService {
       throw new BadRequestException(`Amount must be a multiple of ${unit}`);
     }
     const quantity = amount / unit;
-    const provider = dto.provider ?? (this.mockPaymentsEnabled() ? 'MOCK' : 'DIGIKUNTZ');
+    const requestedProvider =
+      dto.provider ?? (this.mockPaymentsEnabled() ? 'MOCK' : 'DIGIKUNTZ');
+    const provider = requestedProvider;
 
     if (provider === 'MOCK' && !this.mockPaymentsEnabled()) {
       throw new BadRequestException('Mock payments are disabled');
@@ -591,7 +634,7 @@ export class PaymentsService {
       );
       const defaultCountry = this.firstNonEmpty(
         String(this.config.get<string>('DIGIKUNTZ_DEFAULT_COUNTRY', '')).trim(),
-        'CM',
+        'Cameroon',
       );
 
       const userEmail = this.firstNonEmpty(
@@ -601,7 +644,9 @@ export class PaymentsService {
       const userPhone = this.normalizePhone(
         this.firstNonEmpty(dto.userPhone, String((user as any)?.phone ?? '').trim()),
       );
-      const userCountry = this.firstNonEmpty(dto.userCountry, defaultCountry);
+      const userCountry = this.normalizeDigikuntzCountry(
+        this.firstNonEmpty(dto.userCountry, defaultCountry),
+      );
       const senderName = this.firstNonEmpty(dto.senderName, fallbackSenderName);
 
       if (!userEmail || !userPhone || !userCountry || !senderName) {
@@ -690,7 +735,7 @@ export class PaymentsService {
     if (provider === 'DIGIKUNTZ') {
       const payin = await this.digikuntz.createPayin({
         amount,
-        reason: `TINGILIN|${tx._id.toString()}|${dto.raffleId}|${userId}|qty:${quantity}`,
+        reason: this.buildDigikuntzReason(tx),
         userEmail: digikuntzInput!.userEmail,
         userPhone: digikuntzInput!.userPhone,
         userCountry: digikuntzInput!.userCountry,
@@ -768,6 +813,16 @@ export class PaymentsService {
             if (existing && existing.userId.toString() === userId) {
               return this.buildIntentResponse(existing, unit, true);
             }
+          }
+
+          const recentMatchingIntent = await this.findRecentMatchingIntent({
+            userId,
+            raffleId: dto.raffleId,
+            amount,
+            provider: 'DIGIKUNTZ',
+          });
+          if (recentMatchingIntent) {
+            return this.buildIntentResponse(recentMatchingIntent, unit, true);
           }
         }
 
