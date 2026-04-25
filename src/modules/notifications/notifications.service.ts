@@ -69,18 +69,22 @@ export class NotificationsService {
     const q: any = { userId };
     if (opts.unreadOnly) q.readAt = null;
 
-    const [items, total] = await Promise.all([
+    const [items, total, unreadCount] = await Promise.all([
       this.notifModel
         .find(q)
+        .select('_id userId type title body data readAt createdAt')
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
-        .lean(),
+        .lean()
+        .exec(),
       this.notifModel.countDocuments(q),
+      this.notifModel.countDocuments({ userId, readAt: null }),
     ]);
 
     return {
       data: items,
+      unreadCount,
       pagination: {
         page,
         limit,
