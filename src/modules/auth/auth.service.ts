@@ -21,10 +21,15 @@ import {
   getRequiredSecret,
   isProductionEnv,
 } from '../../common/config/runtime-security';
+import { normalizeStoredPhone } from '../../common/utils/phone.util';
 
 type MailDeliveryResult = {
   delivered: boolean;
-  reason: 'EMAIL_SENT' | 'SMTP_CONFIG_MISSING' | 'SMTP_SEND_FAILED';
+  reason:
+    | 'EMAIL_SENT'
+    | 'EMAIL_TARGET_MISSING'
+    | 'SMTP_CONFIG_MISSING'
+    | 'SMTP_SEND_FAILED';
   errorMessage?: string;
 };
 
@@ -41,7 +46,7 @@ export class AuthService {
 
   async register(dto: RegisterDto) {
     const email = dto.email.toLowerCase();
-    const phone = String(dto.phone ?? '').replace(/\s|-/g, '').trim();
+    const phone = normalizeStoredPhone(dto.phone);
 
     const existing = await this.usersService.findByEmail(email);
     if (existing) throw new ConflictException('Email already in use');
@@ -92,7 +97,7 @@ export class AuthService {
 
   async adminInviteUser(dto: InviteUserDto) {
     const email = String(dto.email ?? '').trim().toLowerCase();
-    const phone = String(dto.phone ?? '').replace(/\s|-/g, '').trim();
+    const phone = normalizeStoredPhone(dto.phone);
 
     const [existingEmail, existingPhone] = await Promise.all([
       this.usersService.findByEmail(email),
@@ -128,6 +133,7 @@ export class AuthService {
       },
       emailType: 'INVITE',
       enforceCooldown: false,
+      exposeDeliveryStatus: true,
     });
 
     return {
@@ -275,7 +281,7 @@ export class AuthService {
     const genericResponse = {
       ok: true,
       message:
-        'Si ce compte existe, un code de réinitialisation a été envoyé par email.',
+        'Si un compte correspond, un code sera envoyé à l’adresse email liée à ce compte.',
     };
 
     // Anti-enumeration: do not reveal if user exists.
@@ -294,6 +300,7 @@ export class AuthService {
       genericResponse,
       emailType: 'RESET',
       enforceCooldown: true,
+      exposeDeliveryStatus: this.isPasswordResetDebugEnabled(),
     });
   }
 
@@ -467,9 +474,7 @@ export class AuthService {
       return this.usersService.findByEmail(value.toLowerCase());
     }
 
-    const byPhone = await this.usersService.findByPhone(
-      value.replace(/\s|-/g, ''),
-    );
+    const byPhone = await this.usersService.findByPhone(value);
     if (byPhone) return byPhone;
 
     return this.usersService.findByEmail(value.toLowerCase());
@@ -480,6 +485,7 @@ export class AuthService {
     genericResponse: { ok: boolean; message: string };
     emailType: 'RESET' | 'INVITE';
     enforceCooldown: boolean;
+    exposeDeliveryStatus: boolean;
   }) {
     const now = Date.now();
     const resendCooldownSec = Number(
@@ -535,12 +541,18 @@ export class AuthService {
     }
 
     const debugEnabled = this.isPasswordResetDebugEnabled();
+    const shouldExposeDeliveryStatus =
+      input.exposeDeliveryStatus || debugEnabled;
 
     return {
       ...input.genericResponse,
       expiresInSeconds: ttlMinutes * 60,
-      delivery: deliveryResult.delivered ? 'EMAIL' : 'LOG',
-      deliveryReason: deliveryResult.reason,
+      ...(shouldExposeDeliveryStatus
+        ? {
+            delivery: deliveryResult.delivered ? 'EMAIL' : 'LOG',
+            deliveryReason: deliveryResult.reason,
+          }
+        : {}),
       ...(debugEnabled ? { devResetCode: code } : {}),
     };
   }
@@ -572,6 +584,11 @@ export class AuthService {
     code: string,
     ttlMinutes: number,
   ): Promise<MailDeliveryResult> {
+    if (!String(toEmail ?? '').trim()) {
+      this.logger.error('[RESET] Email cible manquant pour l’envoi du code.');
+      return { delivered: false, reason: 'EMAIL_TARGET_MISSING' };
+    }
+
     const smtp = this.buildSmtpTransporter();
     const from =
       String(this.config.get<string>('MAIL_FROM', '')).trim() ||
@@ -604,7 +621,7 @@ export class AuthService {
       return { delivered: true, reason: 'EMAIL_SENT' };
     } catch (error: any) {
       this.logger.error(
-        `Envoi email reset échoué (${toEmail}): ${error?.message ?? error}`,
+        `Envoi email reset échoué (${toEmail}) via ${this.describeSmtpEndpoint()}: ${error?.message ?? error}`,
       );
       return {
         delivered: false,
@@ -620,6 +637,13 @@ export class AuthService {
     code: string,
     ttlMinutes: number,
   ): Promise<MailDeliveryResult> {
+    if (!String(toEmail ?? '').trim()) {
+      this.logger.error(
+        '[INVITE] Email cible manquant pour l’envoi du code d’invitation.',
+      );
+      return { delivered: false, reason: 'EMAIL_TARGET_MISSING' };
+    }
+
     const smtp = this.buildSmtpTransporter();
     const from =
       String(this.config.get<string>('MAIL_FROM', '')).trim() ||
@@ -653,7 +677,7 @@ export class AuthService {
       return { delivered: true, reason: 'EMAIL_SENT' };
     } catch (error: any) {
       this.logger.error(
-        `Envoi email invitation échoué (${toEmail}): ${error?.message ?? error}`,
+        `Envoi email invitation échoué (${toEmail}) via ${this.describeSmtpEndpoint()}: ${error?.message ?? error}`,
       );
       return {
         delivered: false,
@@ -690,13 +714,16 @@ export class AuthService {
     ).trim();
 
     if ((!host && !service) || !user || !pass) {
-      return { transporter: null, reason: 'SMTP_CONFIG_MISSING' };
-    }
-
-    if (!userRaw.includes('@') && userFromMailFrom) {
-      this.logger.warn(
-        `SMTP_USER appears invalid ("${userRaw}"). Falling back to MAIL_FROM email "${userFromMailFrom}".`,
+      this.logger.error(
+        `[SMTP] Configuration incomplete pour l’envoi des emails: ${JSON.stringify({
+          hasHost: Boolean(host),
+          hasService: Boolean(service),
+          hasUser: Boolean(user),
+          hasPass: Boolean(pass),
+          hasMailFrom: Boolean(mailFrom),
+        })}`,
       );
+      return { transporter: null, reason: 'SMTP_CONFIG_MISSING' };
     }
 
     const transporter = nodemailer.createTransport({
@@ -719,8 +746,7 @@ export class AuthService {
 
   private normalizeSmtpUser(userRaw: string, fallbackEmail: string): string {
     const user = String(userRaw ?? '').trim();
-    if (user.includes('@')) return user;
-    return fallbackEmail;
+    return user || fallbackEmail;
   }
 
   private extractEmailFromMailbox(value: string): string {
@@ -737,6 +763,20 @@ export class AuthService {
     }
 
     return '';
+  }
+
+  private describeSmtpEndpoint(): string {
+    const service = String(this.config.get<string>('SMTP_SERVICE', '')).trim();
+    if (service) return `service:${service}`;
+
+    const host = String(this.config.get<string>('SMTP_HOST', '')).trim();
+    const port = Number(this.config.get<string>('SMTP_PORT', '587'));
+    const secure =
+      String(this.config.get<string>('SMTP_SECURE', 'false'))
+        .trim()
+        .toLowerCase() === 'true';
+
+    return `${host || 'unknown-host'}:${port}${secure ? ' (secure)' : ''}`;
   }
 
   private accessSecret(): string {

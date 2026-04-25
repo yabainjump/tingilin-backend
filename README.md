@@ -56,9 +56,12 @@ copy .env.example .env
 | `SMTP_HOST` | Non | vide | SMTP host |
 | `SMTP_PORT` | Non | `587` | SMTP port |
 | `SMTP_SECURE` | Non | `false` | TLS direct (`true`/`false`) |
-| `SMTP_USER` | Non | vide | SMTP username |
+| `SMTP_SERVICE` | Non | vide | Service SMTP NodeMailer (`gmail`, etc.) |
+| `SMTP_USER` | Non | vide | SMTP username (email ou identifiant SMTP) |
 | `SMTP_PASS` | Non | vide | SMTP password |
 | `MAIL_FROM` | Non | `Tingilin <no-reply@tingilin.local>` | Expediteur emails |
+| `SMTP_TLS_REJECT_UNAUTHORIZED` | Non | `true` | Validation TLS stricte |
+| `SMTP_TLS_SERVERNAME` | Non | vide | Nom TLS explicite si requis par le provider |
 | `DIGIKUNTZ_BASE_URL` | Oui (si provider DIGIKUNTZ) | - | API paiement Digikuntz |
 | `DIGIKUNTZ_USER_ID` | Oui (si provider DIGIKUNTZ) | - | Header auth Digikuntz |
 | `DIGIKUNTZ_SECRET_KEY` | Oui (si provider DIGIKUNTZ) | - | Header auth Digikuntz |

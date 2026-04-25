@@ -35,6 +35,11 @@ function normalizeFromEmail(mailFrom) {
   return '';
 }
 
+function normalizeSmtpUser(userRaw, fallbackEmail) {
+  const user = String(userRaw ?? '').trim();
+  return user || String(fallbackEmail ?? '').trim();
+}
+
 async function main() {
   const to = String(process.argv[2] || '').trim();
   if (!to || !to.includes('@')) {
@@ -52,7 +57,7 @@ async function main() {
   const mailFrom = stripQuotes(env.MAIL_FROM || '');
   const fromEmail = normalizeFromEmail(mailFrom);
   const userRaw = stripQuotes(env.SMTP_USER || '');
-  const user = userRaw.includes('@') ? userRaw : fromEmail;
+  const user = normalizeSmtpUser(userRaw, fromEmail);
   const pass = stripQuotes(env.SMTP_PASS || '').replace(/\s+/g, '');
   const tlsRejectUnauthorized =
     String(stripQuotes(env.SMTP_TLS_REJECT_UNAUTHORIZED || 'true')).toLowerCase() !== 'false';

@@ -879,12 +879,24 @@ export class RafflesService {
       | 'IN_SHIPPING'
       | 'DELIVERED';
   }): Promise<string> {
-    const rows = await this.adminListWinners({
+    const batchSize = 100;
+    const first = await this.adminListWinners({
       search: params?.search,
       status: params?.status,
       page: 1,
-      limit: 1000,
+      limit: batchSize,
     });
+    const rows = [...first.data];
+
+    for (let page = 2; page <= first.totalPages; page += 1) {
+      const chunk = await this.adminListWinners({
+        search: params?.search,
+        status: params?.status,
+        page,
+        limit: batchSize,
+      });
+      rows.push(...chunk.data);
+    }
 
     const lines = [
       [
@@ -896,7 +908,7 @@ export class RafflesService {
         'raffle_date',
         'prize_value_xaf',
       ].join(','),
-      ...rows.data.map((row: any) =>
+      ...rows.map((row: any) =>
         [
           this.escapeCsvCell(row?.winnerName),
           this.escapeCsvCell(row?.winnerEmail),

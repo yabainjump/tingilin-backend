@@ -26,6 +26,10 @@ import {
 } from '../participations/schemas/participation.schema';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { NotificationsService } from '../notifications/notifications.service';
+import {
+  buildPhoneLookupCandidates,
+  normalizeStoredPhone,
+} from '../../common/utils/phone.util';
 
 type HistoryResult = 'WON' | 'LOST' | 'NONE';
 const REFERRAL_TARGET = 10;
@@ -54,9 +58,9 @@ export class UsersService {
   }
 
   async findByPhone(phone: string) {
-    const normalized = String(phone ?? '').replace(/\s|-/g, '').trim();
-    if (!normalized) return null;
-    return this.userModel.findOne({ phone: normalized }).exec();
+    const candidates = buildPhoneLookupCandidates(phone);
+    if (candidates.length === 0) return null;
+    return this.userModel.findOne({ phone: { $in: candidates } }).exec();
   }
 
   async findByReferralCode(code: string) {
@@ -103,8 +107,7 @@ export class UsersService {
     const $set: any = {};
     if (dto.firstName !== undefined) $set.firstName = dto.firstName.trim();
     if (dto.lastName !== undefined) $set.lastName = dto.lastName.trim();
-    if (dto.phone !== undefined)
-      $set.phone = dto.phone.replace(/\s|-/g, '').trim();
+    if (dto.phone !== undefined) $set.phone = normalizeStoredPhone(dto.phone);
     if (dto.avatar !== undefined) {
       if (String(dto.avatar ?? '').trim().startsWith('data:')) {
         throw new BadRequestException('Use the avatar upload endpoint for images');
@@ -135,7 +138,7 @@ export class UsersService {
     const username = String(params.username ?? '').trim().toLowerCase();
     const firstName = params.firstName.trim();
     const lastName = params.lastName.trim();
-    const phone = params.phone.replace(/\s|-/g, '').trim();
+    const phone = normalizeStoredPhone(params.phone);
     const referralCode = await this.generateUniqueReferralCode();
 
     try {
@@ -231,20 +234,72 @@ export class UsersService {
     (user as any).rewardHistory = current;
   }
 
-  async updateRole(userId: string, role: 'USER' | 'ADMIN' | 'MODERATOR') {
-    const updated = await this.userModel
-      .findByIdAndUpdate(userId, { role }, { new: true })
-      .exec();
-    if (!updated) throw new NotFoundException('User not found');
-    return updated;
+  private async countActiveAdmins(): Promise<number> {
+    return this.userModel.countDocuments({ role: 'ADMIN', status: 'ACTIVE' }).exec();
   }
 
-  async updateStatus(userId: string, status: 'ACTIVE' | 'SUSPENDED') {
-    const updated = await this.userModel
-      .findByIdAndUpdate(userId, { status }, { new: true })
-      .exec();
-    if (!updated) throw new NotFoundException('User not found');
-    return updated;
+  async updateRole(
+    userId: string,
+    role: 'USER' | 'ADMIN' | 'MODERATOR',
+    actorUserId?: string,
+  ) {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Invalid user id');
+    }
+
+    const user = await this.userModel.findById(userId).exec();
+    if (!user) throw new NotFoundException('User not found');
+
+    if (actorUserId && String(actorUserId) === String(userId)) {
+      throw new BadRequestException('You cannot change your own role');
+    }
+
+    if (
+      user.role === 'ADMIN' &&
+      role !== 'ADMIN' &&
+      String(user.status ?? 'ACTIVE').toUpperCase() === 'ACTIVE'
+    ) {
+      const activeAdminsCount = await this.countActiveAdmins();
+      if (activeAdminsCount <= 1) {
+        throw new BadRequestException('Cannot demote the last active admin');
+      }
+    }
+
+    user.role = role;
+    await user.save();
+    return user;
+  }
+
+  async updateStatus(
+    userId: string,
+    status: 'ACTIVE' | 'SUSPENDED',
+    actorUserId?: string,
+  ) {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Invalid user id');
+    }
+
+    const user = await this.userModel.findById(userId).exec();
+    if (!user) throw new NotFoundException('User not found');
+
+    if (actorUserId && String(actorUserId) === String(userId)) {
+      throw new BadRequestException('You cannot change your own status');
+    }
+
+    if (
+      user.role === 'ADMIN' &&
+      String(user.status ?? 'ACTIVE').toUpperCase() === 'ACTIVE' &&
+      status !== 'ACTIVE'
+    ) {
+      const activeAdminsCount = await this.countActiveAdmins();
+      if (activeAdminsCount <= 1) {
+        throw new BadRequestException('Cannot suspend the last active admin');
+      }
+    }
+
+    user.status = status;
+    await user.save();
+    return user;
   }
 
   async adminDeleteUser(userId: string, actorUserId?: string) {

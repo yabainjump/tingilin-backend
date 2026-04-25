@@ -53,7 +53,7 @@ export class UsersAdminController {
     @Req() req: any,
   ) {
     try {
-      const user = await this.usersService.updateRole(id, dto.role);
+      const user = await this.usersService.updateRole(id, dto.role, req.user?.sub);
       await this.auditService.safeLog({
         action: 'ADMIN_USER_ROLE_UPDATED',
         actorUserId: req.user?.sub,
@@ -90,7 +90,7 @@ export class UsersAdminController {
     @Req() req: any,
   ) {
     try {
-      const user = await this.usersService.updateStatus(id, dto.status);
+      const user = await this.usersService.updateStatus(id, dto.status, req.user?.sub);
       await this.auditService.safeLog({
         action: 'ADMIN_USER_STATUS_UPDATED',
         actorUserId: req.user?.sub,
