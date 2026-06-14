@@ -316,9 +316,13 @@ export class AuthService {
     if (!code) {
       throw new BadRequestException('Code requis');
     }
-    if (newPassword.length < 6) {
+    if (
+      newPassword.length < 8 ||
+      !/[A-Z]/.test(newPassword) ||
+      !/[\W_]/.test(newPassword)
+    ) {
       throw new BadRequestException(
-        'Le nouveau mot de passe doit contenir au moins 6 caractères',
+        'Le nouveau mot de passe doit contenir au moins 8 caractères, une majuscule et un caractère spécial',
       );
     }
 

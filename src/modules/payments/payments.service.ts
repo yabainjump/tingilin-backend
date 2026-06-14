@@ -1530,19 +1530,6 @@ export class PaymentsService {
     return `"${raw.replace(/"/g, '""')}"`;
   }
 
-  private async bumpRaffleStats(
-    raffleId: string,
-    userId: string,
-    quantity: number,
-  ) {
-    const { default: mongoose } = await import('mongoose');
-    const RaffleModel = mongoose.model('Raffle');
-    await RaffleModel.updateOne(
-      { _id: raffleId },
-      { $inc: { ticketsSold: quantity, participantsCount: 1 } },
-    ).exec();
-  }
-
   async useFreeTicket(userId: string, dto: CreateFreeTicketDto) {
     const raffle = await this.rafflesService.adminGetById(dto.raffleId);
     this.assertRafflePurchasable(raffle);

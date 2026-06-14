@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import * as crypto from 'crypto';
 import { Ticket, TicketDocument } from './schemas/ticket.schema';
 
 @Injectable()
@@ -27,7 +28,17 @@ export class TicketsService {
     const userObj = new Types.ObjectId(params.userId);
     const txObj = new Types.ObjectId(params.transactionId);
 
-    const docs = Array.from({ length: params.quantity }).map(() => ({
+    // Idempotence: si la finalisation se rejoue (race webhook + verify),
+    // ne pas recreer de tickets deja emis pour cette transaction.
+    const existing = await this.ticketModel
+      .find({ transactionId: txObj })
+      .exec();
+    if (existing.length >= params.quantity) {
+      return existing;
+    }
+
+    const remaining = params.quantity - existing.length;
+    const docs = Array.from({ length: remaining }).map(() => ({
       raffleId: raffleObj,
       userId: userObj,
       transactionId: txObj,
@@ -48,7 +59,7 @@ export class TicketsService {
   }
 
   private generateSerial(raffleId: string) {
-    const rand = Math.random().toString(16).slice(2, 10).toUpperCase();
+    const rand = crypto.randomBytes(4).toString('hex').toUpperCase();
     return `TGL-${raffleId.slice(-6).toUpperCase()}-${rand}`;
   }
 }
