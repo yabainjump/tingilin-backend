@@ -204,34 +204,25 @@ export class UsersService {
     return `${appBase}/auth/register?ref=${encodedCode}&referralCode=${encodedCode}`;
   }
 
-  private appendRewardHistory(
-    user: UserDocument,
-    input: {
-      source: RewardHistorySource;
-      reason: string;
-      amount?: number;
-      metadata?: Record<string, any>;
-    },
-  ) {
-    const current = Array.isArray((user as any).rewardHistory)
-      ? (user as any).rewardHistory
-      : [];
-
-    current.push({
-      source: input.source,
-      amount: Math.max(1, Number(input.amount ?? 1)),
-      reason: input.reason,
-      createdAt: new Date(),
-      metadata: input.metadata ?? {},
-    });
-
-    // keep latest 100 events to avoid unbounded growth in a single document
-    if (current.length > 100) {
-      (user as any).rewardHistory = current.slice(-100);
-      return;
+  private buildRewardHistoryItems(
+    source: RewardHistorySource,
+    fromGranted: number,
+    toGranted: number,
+    target: number,
+    reason: string,
+    requiredKey: 'playedRafflesRequired' | 'qualifiedReferralsRequired',
+  ): Array<Record<string, any>> {
+    const items: Array<Record<string, any>> = [];
+    for (let i = fromGranted + 1; i <= toGranted; i++) {
+      items.push({
+        source,
+        amount: 1,
+        reason,
+        createdAt: new Date(),
+        metadata: { milestone: i * target, [requiredKey]: target },
+      });
     }
-
-    (user as any).rewardHistory = current;
+    return items;
   }
 
   private async countActiveAdmins(): Promise<number> {
@@ -567,51 +558,80 @@ export class UsersService {
     const user = await this.userModel.findById(uid).exec();
     if (!user) throw new NotFoundException('User not found');
 
-    const [ticketCount, distinctRaffles] = await Promise.all([
-      this.ticketModel.countDocuments({ userId: uid }),
-      this.ticketModel.distinct('raffleId', { userId: uid }),
-    ]);
+    // La fidelite ne compte que les participations PAYANTES: un ticket gratuit
+    // ne doit pas compter pour gagner d'autres tickets gratuits (anti-farming).
+    const paidRaffleIds = await this.txModel.distinct('raffleId', {
+      userId: uid,
+      status: 'SUCCESS',
+      provider: { $ne: 'FREE_TICKET' },
+    });
+    const playedRafflesCount = paidRaffleIds.length;
+    const hasPurchasedAtLeastOnce = playedRafflesCount > 0;
 
-    let userChanged = false;
-    let loyaltyRewardDelta = 0;
+    // Assure un code de parrainage (utilisateurs anterieurs a la feature).
     if (!user.referralCode) {
-      user.referralCode = await this.generateUniqueReferralCode();
-      userChanged = true;
+      const code = await this.generateUniqueReferralCode();
+      await this.userModel
+        .updateOne(
+          {
+            _id: uid,
+            $or: [
+              { referralCode: { $exists: false } },
+              { referralCode: null },
+              { referralCode: '' },
+            ],
+          },
+          { $set: { referralCode: code } },
+        )
+        .exec();
     }
 
-    const hasPurchasedAtLeastOnce = ticketCount > 0;
-
+    // Qualifie le filleul apres son premier achat payant (atomique).
     if (user.referredBy && !user.referralQualified && hasPurchasedAtLeastOnce) {
-      user.referralQualified = true;
-      user.referralQualifiedAt = new Date();
-      userChanged = true;
+      await this.userModel
+        .updateOne(
+          { _id: uid, referralQualified: { $ne: true } },
+          {
+            $set: {
+              referralQualified: true,
+              referralQualifiedAt: new Date(),
+            },
+          },
+        )
+        .exec();
     }
 
-    const playedRafflesCount = distinctRaffles.length;
+    // Recompenses fidelite: attribution ATOMIQUE et idempotente.
+    // Le filtre sur loyaltyRewardsGranted empeche tout double-credit en cas
+    // d'appels concurrents (deux paiements finalises en meme temps).
+    let loyaltyRewardDelta = 0;
     const loyaltyTargetRewards = Math.floor(playedRafflesCount / LOYALTY_TARGET);
     const currentLoyaltyRewards = Number(user.loyaltyRewardsGranted ?? 0);
 
     if (loyaltyTargetRewards > currentLoyaltyRewards) {
       const delta = loyaltyTargetRewards - currentLoyaltyRewards;
-      loyaltyRewardDelta = delta;
-      user.loyaltyRewardsGranted = loyaltyTargetRewards;
-      user.freeTicketsBalance = Number(user.freeTicketsBalance ?? 0) + delta;
+      const historyItems = this.buildRewardHistoryItems(
+        'LOYALTY',
+        currentLoyaltyRewards,
+        loyaltyTargetRewards,
+        LOYALTY_TARGET,
+        'Bonus fidélité attribué (+1 ticket)',
+        'playedRafflesRequired',
+      );
 
-      for (let i = currentLoyaltyRewards + 1; i <= loyaltyTargetRewards; i++) {
-        const milestone = i * LOYALTY_TARGET;
-        this.appendRewardHistory(user, {
-          source: 'LOYALTY',
-          amount: 1,
-          reason: `Bonus fidélité attribué (+1 ticket)`,
-          metadata: { milestone, playedRafflesRequired: LOYALTY_TARGET },
-        });
+      const res = await this.userModel
+        .updateOne(
+          { _id: uid, loyaltyRewardsGranted: currentLoyaltyRewards },
+          {
+            $inc: { loyaltyRewardsGranted: delta, freeTicketsBalance: delta },
+            $push: { rewardHistory: { $each: historyItems, $slice: -100 } },
+          },
+        )
+        .exec();
+
+      if (Number((res as any)?.modifiedCount ?? 0) > 0) {
+        loyaltyRewardDelta = delta;
       }
-
-      userChanged = true;
-    }
-
-    if (userChanged) {
-      await user.save();
     }
 
     if (loyaltyRewardDelta > 0) {
@@ -645,37 +665,44 @@ export class UsersService {
 
         if (referralTargetRewards > currentReferralRewards) {
           const delta = referralTargetRewards - currentReferralRewards;
-          inviter.referralRewardsGranted = referralTargetRewards;
-          inviter.freeTicketsBalance =
-            Number(inviter.freeTicketsBalance ?? 0) + delta;
+          const historyItems = this.buildRewardHistoryItems(
+            'REFERRAL',
+            currentReferralRewards,
+            referralTargetRewards,
+            REFERRAL_TARGET,
+            'Bonus parrainage attribué (+1 ticket)',
+            'qualifiedReferralsRequired',
+          );
 
-          for (
-            let i = currentReferralRewards + 1;
-            i <= referralTargetRewards;
-            i++
-          ) {
-            const milestone = i * REFERRAL_TARGET;
-            this.appendRewardHistory(inviter, {
-              source: 'REFERRAL',
-              amount: 1,
-              reason: `Bonus parrainage attribué (+1 ticket)`,
-              metadata: { milestone, qualifiedReferralsRequired: REFERRAL_TARGET },
+          const res = await this.userModel
+            .updateOne(
+              {
+                _id: inviter._id,
+                referralRewardsGranted: currentReferralRewards,
+              },
+              {
+                $inc: {
+                  referralRewardsGranted: delta,
+                  freeTicketsBalance: delta,
+                },
+                $push: { rewardHistory: { $each: historyItems, $slice: -100 } },
+              },
+            )
+            .exec();
+
+          if (Number((res as any)?.modifiedCount ?? 0) > 0) {
+            await this.notifications.create({
+              userId: String(inviter._id),
+              type: 'FREE_TICKET_AVAILABLE',
+              title: 'Ticket gratuit disponible 🎁',
+              body: `Tu as gagné ${delta} ticket(s) gratuit(s) via le parrainage.`,
+              data: {
+                source: 'REFERRAL',
+                amount: delta,
+                deepLink: '/tabs/referral',
+              },
             });
           }
-
-          await inviter.save();
-
-          await this.notifications.create({
-            userId: String(inviter._id),
-            type: 'FREE_TICKET_AVAILABLE',
-            title: 'Ticket gratuit disponible 🎁',
-            body: `Tu as gagné ${delta} ticket(s) gratuit(s) via le parrainage.`,
-            data: {
-              source: 'REFERRAL',
-              amount: delta,
-              deepLink: '/tabs/referral',
-            },
-          });
         }
       }
     }
@@ -713,8 +740,8 @@ export class UsersService {
   }
 
   async getReferralSummary(userId: string) {
-    await this.evaluateMilestones(userId);
-
+    // Lecture pure: les recompenses sont attribuees a l'achat
+    // (finalizeSuccessfulTransaction -> evaluateMilestones), jamais sur un GET.
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException('Invalid user id');
     }
@@ -724,8 +751,20 @@ export class UsersService {
     if (!user) throw new NotFoundException('User not found');
 
     if (!user.referralCode) {
-      user.referralCode = await this.generateUniqueReferralCode();
-      await user.save();
+      const code = await this.generateUniqueReferralCode();
+      await this.userModel
+        .updateOne(
+          {
+            _id: uid,
+            $or: [
+              { referralCode: { $exists: false } },
+              { referralCode: null },
+              { referralCode: '' },
+            ],
+          },
+          { $set: { referralCode: code } },
+        )
+        .exec();
       user = await this.userModel.findById(uid).exec();
       if (!user) throw new NotFoundException('User not found');
     }
@@ -735,7 +774,11 @@ export class UsersService {
         referredBy: uid,
         referralQualified: true,
       }),
-      this.ticketModel.distinct('raffleId', { userId: uid }),
+      this.txModel.distinct('raffleId', {
+        userId: uid,
+        status: 'SUCCESS',
+        provider: { $ne: 'FREE_TICKET' },
+      }),
     ]);
 
     const loyaltyPlayedCount = playedRaffles.length;
