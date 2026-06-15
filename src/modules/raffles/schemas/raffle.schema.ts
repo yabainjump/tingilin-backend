@@ -25,6 +25,16 @@ export class RaffleWinner {
   fulfillmentUpdatedAt!: Date;
 }
 
+export class ProvablyFairProof {
+  algorithm!: string;
+  ticketCount!: number;
+  ticketsetHash!: string;
+  winningIndex!: number;
+  digest!: string;
+  committedBeforeDraw!: boolean;
+  revealedAt?: Date | null;
+}
+
 export type RaffleDocument = HydratedDocument<Raffle>;
 
 @Schema({ timestamps: true })
@@ -94,6 +104,30 @@ export class Raffle {
     _id: false,
   })
   winner?: RaffleWinner | null;
+
+  // Tirage verifiable (commit-reveal). Le seed est secret jusqu'au tirage,
+  // puis revele via l'endpoint public de verification.
+  @Prop({ type: String, select: false, default: null })
+  drawServerSeed?: string | null;
+
+  // Engagement public = SHA256(drawServerSeed), publie des la creation.
+  @Prop({ type: String, default: null })
+  drawCommitment?: string | null;
+
+  @Prop({
+    type: {
+      algorithm: { type: String },
+      ticketCount: { type: Number },
+      ticketsetHash: { type: String },
+      winningIndex: { type: Number },
+      digest: { type: String },
+      committedBeforeDraw: { type: Boolean, default: false },
+      revealedAt: { type: Date, default: null },
+    },
+    default: null,
+    _id: false,
+  })
+  provablyFair?: ProvablyFairProof | null;
 }
 
 export const RaffleSchema = SchemaFactory.createForClass(Raffle);

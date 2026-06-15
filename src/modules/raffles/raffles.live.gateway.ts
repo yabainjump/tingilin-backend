@@ -34,7 +34,7 @@ type LiveWinnerDto = {
 
 type LiveDrawPayload = {
   viewersLive: number;
-  trustPercent: number;
+  provablyFair: boolean;
   analysisProgress: number;
   analysisLabel: 'SCANNING...' | 'VERIFYING...';
   scan: {
@@ -138,7 +138,8 @@ export class RafflesLiveGateway
       .map((w) => String(w.ticketCode ?? '').trim().toUpperCase())
       .filter(Boolean);
 
-    const merged = [...liveTickets, ...fallbackCodes, 'X922', 'B738', 'A492', 'C102', 'E551'];
+    // Uniquement de vrais codes de tickets (plus de codes factices de remplissage).
+    const merged = [...liveTickets, ...fallbackCodes];
     const tickets = Array.from(new Set(merged)).slice(0, 7);
 
     const activeIndex = tickets.length ? this.tickCursor % tickets.length : 0;
@@ -155,7 +156,7 @@ export class RafflesLiveGateway
 
     return {
       viewersLive: this.viewerIds.size,
-      trustPercent: 99.9,
+      provablyFair: true,
       analysisProgress: this.analysisProgress,
       analysisLabel,
       scan: {

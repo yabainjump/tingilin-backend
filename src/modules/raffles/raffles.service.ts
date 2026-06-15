@@ -30,6 +30,15 @@ import {
 } from '../participations/schemas/participation.schema';
 import { NotificationsService } from '../notifications/notifications.service';
 import { storeOptimizedImageFromDataUrl } from '../../common/uploads/image-storage';
+import {
+  PROVABLY_FAIR_ALGORITHM,
+  PROVABLY_FAIR_FORMULA,
+  computeTicketsetHash,
+  computeWinningIndex,
+  generateServerSeed,
+  hashServerSeed,
+  verifyDraw,
+} from './provably-fair';
 
 @Injectable()
 export class RafflesService {
@@ -397,6 +406,7 @@ export class RafflesService {
       totalTickets,
       ticketsSold: 0,
       participantsCount: 0,
+      ...this.newDrawCommitment(),
     } as any);
   }
 
@@ -943,6 +953,217 @@ export class RafflesService {
       .exec();
   }
 
+  private newDrawCommitment(): {
+    drawServerSeed: string;
+    drawCommitment: string;
+  } {
+    const drawServerSeed = generateServerSeed();
+    return { drawServerSeed, drawCommitment: hashServerSeed(drawServerSeed) };
+  }
+
+  /**
+   * Selectionne le ticket gagnant de maniere DETERMINISTE et verifiable.
+   * Revele le seed engage a la creation (ou en genere un en mode degrade
+   * pour les anciennes tombolas sans engagement: committedBeforeDraw=false).
+   */
+  private async pickProvablyFairWinner(
+    raffleId: Types.ObjectId | string,
+  ): Promise<{
+    ticket: {
+      _id: Types.ObjectId;
+      userId: Types.ObjectId;
+      serial?: string | null;
+    } | null;
+    serverSeed: string;
+    commitment: string;
+    committedBeforeDraw: boolean;
+    proof: {
+      algorithm: string;
+      ticketCount: number;
+      ticketsetHash: string;
+      winningIndex: number;
+      digest: string;
+    } | null;
+  }> {
+    const rid =
+      typeof raffleId === 'string' ? new Types.ObjectId(raffleId) : raffleId;
+
+    // Lit le seed engage (champ select:false) sans toucher au document principal.
+    const seedDoc: any = await this.raffleModel
+      .findById(rid)
+      .select('+drawServerSeed drawCommitment')
+      .lean()
+      .exec();
+
+    let serverSeed = String(seedDoc?.drawServerSeed ?? '').trim();
+    let commitment = String(seedDoc?.drawCommitment ?? '').trim();
+    let committedBeforeDraw = Boolean(serverSeed && commitment);
+
+    if (!serverSeed || !commitment) {
+      const generated = this.newDrawCommitment();
+      serverSeed = generated.drawServerSeed;
+      commitment = generated.drawCommitment;
+      committedBeforeDraw = false;
+    }
+
+    const tickets: any[] = await this.ticketModel
+      .find({ raffleId: rid, status: 'ACTIVE' })
+      .sort({ _id: 1 })
+      .select('_id userId serial')
+      .lean()
+      .exec();
+
+    if (!tickets.length) {
+      return {
+        ticket: null,
+        serverSeed,
+        commitment,
+        committedBeforeDraw,
+        proof: null,
+      };
+    }
+
+    const orderedSerials = tickets.map((t) =>
+      String(t?.serial ?? t?._id ?? '').trim(),
+    );
+    const ticketsetHash = computeTicketsetHash(orderedSerials);
+    const { winningIndex, digest } = computeWinningIndex({
+      serverSeed,
+      raffleId: rid.toString(),
+      ticketsetHash,
+      ticketCount: tickets.length,
+    });
+
+    const winning = tickets[winningIndex];
+
+    return {
+      ticket: {
+        _id: winning._id,
+        userId: winning.userId,
+        serial: winning.serial ?? null,
+      },
+      serverSeed,
+      commitment,
+      committedBeforeDraw,
+      proof: {
+        algorithm: PROVABLY_FAIR_ALGORITHM,
+        ticketCount: tickets.length,
+        ticketsetHash,
+        winningIndex,
+        digest,
+      },
+    };
+  }
+
+  /**
+   * Donnees publiques de verification du tirage (commit-reveal).
+   * Avant le tirage: seul l'engagement (commitment) est expose.
+   * Apres le tirage: le seed est revele + toutes les donnees permettant a
+   * n'importe qui de recalculer et confirmer le gagnant.
+   */
+  async getFairness(raffleId: string) {
+    this.ensureObjectId(raffleId, 'Invalid raffleId');
+
+    const raffle: any = await this.raffleModel
+      .findById(raffleId)
+      .select('+drawServerSeed')
+      .lean()
+      .exec();
+    if (!raffle) throw new NotFoundException('Raffle not found');
+
+    const base = {
+      raffleId: String(raffle._id),
+      status: raffle.status,
+      algorithm: PROVABLY_FAIR_ALGORITHM,
+      formula: PROVABLY_FAIR_FORMULA,
+      commitment: raffle.drawCommitment ?? null,
+    };
+
+    const proof = raffle.provablyFair ?? null;
+    const isDrawn = raffle.status === RaffleStatus.DRAWN;
+
+    if (!isDrawn || !proof) {
+      // Le seed reste secret tant que le tirage n'a pas eu lieu.
+      return { ...base, revealed: null };
+    }
+
+    // Reconstruit l'ensemble EXACT des participants au moment du tirage:
+    // tickets ACTIVE a l'epoque (le gagnant a depuis le statut WINNER), tries
+    // par _id croissant comme lors de la selection.
+    const tickets: any[] = await this.ticketModel
+      .find({ raffleId: new Types.ObjectId(String(raffle._id)) })
+      .sort({ _id: 1 })
+      .select('_id serial status')
+      .lean()
+      .exec();
+
+    const orderedSerials = tickets
+      .filter((t) =>
+        ['ACTIVE', 'WINNER'].includes(String(t?.status ?? '').toUpperCase()),
+      )
+      .map((t) => String(t?.serial ?? t?._id ?? '').trim());
+
+    const winningTicketSerial =
+      typeof proof.winningIndex === 'number'
+        ? (orderedSerials[proof.winningIndex] ?? null)
+        : null;
+
+    const verification = verifyDraw({
+      serverSeed: String(raffle.drawServerSeed ?? ''),
+      commitment: String(raffle.drawCommitment ?? ''),
+      raffleId: String(raffle._id),
+      orderedSerials,
+      expectedWinningIndex: Number(proof.winningIndex),
+    });
+
+    return {
+      ...base,
+      revealed: {
+        serverSeed: raffle.drawServerSeed ?? null,
+        ticketCount: proof.ticketCount,
+        ticketsetHash: proof.ticketsetHash,
+        winningIndex: proof.winningIndex,
+        digest: proof.digest,
+        committedBeforeDraw: proof.committedBeforeDraw,
+        revealedAt: proof.revealedAt ?? raffle.drawnAt ?? null,
+        drawnAt: raffle.drawnAt ?? null,
+        winningTicketSerial,
+        winnerUserId: raffle.winnerUserId
+          ? String(raffle.winnerUserId)
+          : null,
+        orderedSerials,
+      },
+      verified: verification.valid,
+      verificationIssues: verification.reasons,
+    };
+  }
+
+  private applyDrawProof(
+    raffle: any,
+    draw: {
+      serverSeed: string;
+      commitment: string;
+      committedBeforeDraw: boolean;
+      proof: {
+        algorithm: string;
+        ticketCount: number;
+        ticketsetHash: string;
+        winningIndex: number;
+        digest: string;
+      } | null;
+    },
+  ): void {
+    raffle.drawServerSeed = draw.serverSeed;
+    raffle.drawCommitment = draw.commitment;
+    raffle.provablyFair = draw.proof
+      ? {
+          ...draw.proof,
+          committedBeforeDraw: draw.committedBeforeDraw,
+          revealedAt: raffle.drawnAt ?? new Date(),
+        }
+      : null;
+  }
+
   private async pickRandomActiveTicket(
     raffleId: Types.ObjectId | string,
   ): Promise<{ _id: Types.ObjectId; userId: Types.ObjectId; serial?: string | null } | null> {
@@ -977,7 +1198,8 @@ export class RafflesService {
       throw new BadRequestException('Winner already drawn');
     }
 
-    const winner = await this.pickRandomActiveTicket(raffle._id);
+    const draw = await this.pickProvablyFairWinner(raffle._id);
+    const winner = draw.ticket;
     if (!winner) {
       throw new BadRequestException('No tickets sold');
     }
@@ -999,6 +1221,9 @@ export class RafflesService {
       fulfillmentStatus: WinnerFulfillmentStatus.PENDING_VERIFICATION,
       fulfillmentUpdatedAt: new Date(),
     };
+
+    // Revele le seed et enregistre la preuve verifiable du tirage.
+    this.applyDrawProof(raffle, draw);
 
     raffle.status = RaffleStatus.DRAWN;
 
@@ -1110,6 +1335,7 @@ export class RafflesService {
             status: publishNow ? RaffleStatus.LIVE : RaffleStatus.DRAFT,
             createdBy: new Types.ObjectId(createdBy),
             badge: dto.raffle.badge ?? '',
+            ...this.newDrawCommitment(),
           },
         ],
         { session },
@@ -1225,7 +1451,8 @@ export class RafflesService {
       await raffle.save();
     }
 
-    const ticket = await this.pickRandomActiveTicket(raffle._id);
+    const draw = await this.pickProvablyFairWinner(raffle._id);
+    const ticket = draw.ticket;
     if (!ticket) {
       raffle.status = RaffleStatus.CLOSED;
       raffle.winner = null;
@@ -1256,6 +1483,9 @@ export class RafflesService {
       fulfillmentStatus: WinnerFulfillmentStatus.PENDING_VERIFICATION,
       fulfillmentUpdatedAt: new Date(),
     };
+
+    // Revele le seed et enregistre la preuve verifiable du tirage.
+    this.applyDrawProof(raffle, draw);
 
     await raffle.save();
 

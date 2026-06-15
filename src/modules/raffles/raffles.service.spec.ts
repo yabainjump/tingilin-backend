@@ -129,7 +129,7 @@ describe('RafflesService', () => {
     expect(match?.productId).toBeUndefined();
   });
 
-  it('drawWinner should pick the winner from a Mongo random sample instead of ticket order', async () => {
+  it('drawWinner selects a provably-fair winner deterministically and records the proof', async () => {
     const raffleId = new Types.ObjectId();
     const winnerTicketId = new Types.ObjectId();
     const winnerUserId = new Types.ObjectId();
@@ -140,13 +140,35 @@ describe('RafflesService', () => {
       save: jest.fn().mockResolvedValue(undefined),
     };
 
+    // findById est appele 2x: en clair (drawWinner) et avec select/lean
+    // (pickProvablyFairWinner, pour lire le seed engage).
     raffleModelMock.findById.mockReturnValue({
       exec: jest.fn().mockResolvedValue(raffleDoc),
+      select: jest.fn().mockReturnValue({
+        lean: jest.fn().mockReturnValue({
+          exec: jest.fn().mockResolvedValue({
+            drawServerSeed: 'a'.repeat(64),
+            drawCommitment: 'committed-hash',
+          }),
+        }),
+      }),
     });
-    ticketModelMock.aggregate.mockReturnValue({
-      exec: jest.fn().mockResolvedValue([
-        { _id: winnerTicketId, userId: winnerUserId, serial: 'TGL-TEST-ABCD1234' },
-      ]),
+
+    // Ensemble ordonne des tickets ACTIVE (selection deterministe dessus).
+    ticketModelMock.find.mockReturnValue({
+      sort: jest.fn().mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          lean: jest.fn().mockReturnValue({
+            exec: jest.fn().mockResolvedValue([
+              {
+                _id: winnerTicketId,
+                userId: winnerUserId,
+                serial: 'TGL-TEST-ABCD1234',
+              },
+            ]),
+          }),
+        }),
+      }),
     });
     ticketModelMock.distinct.mockResolvedValue([winnerUserId]);
     ticketModelMock.updateOne.mockReturnValue({
@@ -162,17 +184,30 @@ describe('RafflesService', () => {
 
     const result: any = await service.drawWinner(String(raffleId));
 
-    expect(ticketModelMock.aggregate).toHaveBeenCalledWith([
-      { $match: { raffleId, status: 'ACTIVE' } },
-      { $sample: { size: 1 } },
-      { $project: { _id: 1, userId: 1, serial: 1 } },
-    ]);
+    // Selection deterministe sur l'ensemble ACTIVE (plus de $sample aleatoire).
+    expect(ticketModelMock.find).toHaveBeenCalledWith({
+      raffleId,
+      status: 'ACTIVE',
+    });
     expect(ticketModelMock.updateOne).toHaveBeenCalledWith(
       { _id: winnerTicketId },
       { $set: { status: 'WINNER' } },
     );
     expect(result?.winner?.ticketId).toEqual(winnerTicketId);
     expect(result?.winner?.userId).toEqual(winnerUserId);
+
+    // La preuve verifiable est enregistree et le seed revele.
+    expect(raffleDoc.drawServerSeed).toBe('a'.repeat(64));
+    expect(raffleDoc.provablyFair).toEqual(
+      expect.objectContaining({
+        algorithm: 'HMAC-SHA256',
+        ticketCount: 1,
+        winningIndex: 0,
+        committedBeforeDraw: true,
+        ticketsetHash: expect.any(String),
+        digest: expect.any(String),
+      }),
+    );
     expect(notificationsMock.create).toHaveBeenCalled();
   });
 });
