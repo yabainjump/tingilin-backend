@@ -1,72 +1,84 @@
 #!/usr/bin/env bash
+# =============================================================================
+# Deploiement BACKEND (NestJS + PM2) sur cPanel.
+# A lancer manuellement sur le serveur, depuis le dossier du repo:
+#     bash ./deploy-backend.sh
+#
+# Variables surchargeables (export VAR=... avant la commande):
+#   BRANCH        branche git a deployer            (defaut: master)
+#   REPO_DIR      dossier du repo sur le serveur    (defaut: ce dossier)
+#   PM2_APP_NAME  nom du process PM2                (defaut: tingilin-api)
+#   APP_PORT      port local du Node                (defaut: 3001)
+# =============================================================================
 set -euo pipefail
 
 BRANCH="${BRANCH:-master}"
-REPO_DIR="${REPO_DIR:-$HOME/public_html/backend.tinguilin.yaba-in.com}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+PM2_APP_NAME="${PM2_APP_NAME:-tingilin-api}"
+APP_PORT="${APP_PORT:-3001}"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${APP_PORT}/health/ready}"
 
+# --- Localisation de Node/npm/pm2 (cPanel EA-Nodejs) ----------------------------
 if [ -z "${NODE_BIN:-}" ]; then
-  if [ -d /opt/cpanel/ea-nodejs20/bin ]; then
-    NODE_BIN="/opt/cpanel/ea-nodejs20/bin"
-  else
-    NODE_BIN="/opt/cpanel/ea-nodejs18/bin"
+  if   [ -d /opt/cpanel/ea-nodejs22/bin ]; then NODE_BIN="/opt/cpanel/ea-nodejs22/bin"
+  elif [ -d /opt/cpanel/ea-nodejs20/bin ]; then NODE_BIN="/opt/cpanel/ea-nodejs20/bin"
+  elif command -v node >/dev/null 2>&1;    then NODE_BIN="$(dirname "$(command -v node)")"
+  else echo "Node introuvable. Definis NODE_BIN."; exit 1
   fi
 fi
-
-NPM="${NPM:-$NODE_BIN/npm}"
-HEALTH_URL="${HEALTH_URL:-https://backend.tinguilin.yaba-in.com/health/ready}"
-
 export PATH="$NODE_BIN:$PATH"
+NPM="${NPM:-$NODE_BIN/npm}"
+PM2="${PM2:-$NODE_BIN/pm2}"
+command -v "$PM2" >/dev/null 2>&1 || PM2="$NPM exec --yes pm2 --"
 
+echo "==> Backend deploy | repo=$REPO_DIR | branch=$BRANCH | node=$("$NODE_BIN/node" -v)"
 cd "$REPO_DIR"
+mkdir -p logs "$HOME/env-backups"
 
-mkdir -p "$HOME/env-backups" tmp
+# --- Sauvegarde du .env (jamais ecrase par git) --------------------------------
+[ -f .env ] && cp .env "$HOME/env-backups/backend-env-$(date +%F-%H%M%S)" || true
 
-if [ -f .env ]; then
-  cp .env "$HOME/env-backups/backend-env-$(date +%F-%H%M%S)"
-fi
-
-if [ -f .htaccess ]; then
-  cp .htaccess "$HOME/env-backups/backend-htaccess-$(date +%F-%H%M%S)"
-fi
-
+# --- Recuperation du code ------------------------------------------------------
 git fetch origin "$BRANCH"
 git reset --hard "origin/$BRANCH"
-git clean -fd -e .env -e .htaccess -e tmp/ -e uploads/
+git clean -fd -e .env -e logs/ -e uploads/ -e node_modules/
 
-[ -f .env ] || { echo ".env manquant"; exit 1; }
-
+# --- Garde-fous ----------------------------------------------------------------
+[ -f .env ] || { echo "ERREUR: .env manquant dans $REPO_DIR"; exit 1; }
 chmod 600 .env
 
-NODE_VERSION="$("$NODE_BIN/node" -p "process.versions.node")"
 NODE_MAJOR="$("$NODE_BIN/node" -p "process.versions.node.split('.')[0]")"
+[ "$NODE_MAJOR" -ge 20 ] || { echo "ERREUR: Node >= 20 requis (actuel $("$NODE_BIN/node" -v))"; exit 1; }
 
-if [ "$NODE_MAJOR" -lt 20 ]; then
-  echo "Node.js $NODE_VERSION detecte. Ce backend Nest 11 requiert Node.js >= 20."
-  echo "Configure cPanel/Passenger sur Node 20 puis relance le deploy."
-  exit 1
+if ! grep -q '^NODE_ENV=production' .env; then
+  echo "ATTENTION: NODE_ENV=production absent du .env (garde-fous prod desactives)."
 fi
 
-if grep -Eiq '^(JWT_ACCESS_SECRET|JWT_REFRESH_SECRET)=(CHANGE_ME|REPLACE_ME|DEFAULT|TEST)' .env; then
-  echo "Secrets JWT invalides dans .env"
-  exit 1
-fi
-
-"$NPM" install --no-audit --no-fund
+# --- Build (devDeps necessaires pour 'nest build') -----------------------------
+if [ -f package-lock.json ]; then "$NPM" ci --no-audit --no-fund; else "$NPM" install --no-audit --no-fund; fi
 "$NPM" run build
+[ -f dist/main.js ] || { echo "ERREUR: dist/main.js manquant apres build"; exit 1; }
 
-[ -f app.js ] || { echo "app.js manquant pour Passenger"; exit 1; }
-[ -f dist/main.js ] || { echo "dist/main.js manquant apres build"; exit 1; }
+# --- PM2: demarrage ou reload zero-downtime + persistance ----------------------
+if $PM2 describe "$PM2_APP_NAME" >/dev/null 2>&1; then
+  echo "==> PM2 reload (zero-downtime)"
+  $PM2 reload deploy/pm2/ecosystem.config.cjs --update-env
+else
+  echo "==> PM2 premier demarrage"
+  $PM2 start deploy/pm2/ecosystem.config.cjs --env production
+fi
+$PM2 save   # persiste la liste des process (pour 'pm2 resurrect' au reboot)
 
-touch tmp/restart.txt
-
+# --- Healthcheck local ---------------------------------------------------------
+echo "==> Healthcheck $HEALTH_URL"
 for i in $(seq 1 30); do
-  if curl -fsS --max-time 10 "$HEALTH_URL" >/dev/null; then
-    echo "Deploy backend OK"
+  if curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; then
+    echo "✅ Deploy backend OK ($PM2_APP_NAME)"
     exit 0
   fi
   sleep 2
 done
 
-echo "Healthcheck failed"
-curl -i https://backend.tinguilin.yaba-in.com/health || true
+echo "❌ Healthcheck KO. Dernieres lignes de log:"
+$PM2 logs "$PM2_APP_NAME" --lines 40 --nostream || true
 exit 1

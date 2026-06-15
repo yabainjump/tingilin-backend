@@ -1,4 +1,7 @@
-const instances = Number(process.env.PM2_INSTANCES || 3);
+// IMPORTANT: garder 1 instance sauf si un adaptateur Socket.IO partage
+// (Redis) est configure. Plusieurs instances cassent les tirages "live"
+// (chaque instance a son propre set de viewers et ses propres broadcasts).
+const instances = Number(process.env.PM2_INSTANCES || 1);
 const basePort = Number(process.env.APP_PORT || 3001);
 
 module.exports = {
