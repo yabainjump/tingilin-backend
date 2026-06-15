@@ -59,14 +59,13 @@ if [ -f package-lock.json ]; then "$NPM" ci --no-audit --no-fund; else "$NPM" in
 "$NPM" run build
 [ -f dist/main.js ] || { echo "ERREUR: dist/main.js manquant apres build"; exit 1; }
 
-# --- PM2: demarrage ou reload zero-downtime + persistance ----------------------
-if $PM2 describe "$PM2_APP_NAME" >/dev/null 2>&1; then
-  echo "==> PM2 reload (zero-downtime)"
-  $PM2 reload deploy/pm2/ecosystem.config.cjs --update-env
-else
-  echo "==> PM2 premier demarrage"
-  $PM2 start deploy/pm2/ecosystem.config.cjs --env production
-fi
+# --- PM2: (re)demarrage propre + persistance -----------------------------------
+# On supprime toute entree existante (potentiellement morte/obsolete) puis on
+# redemarre. Plus fiable que 'reload' qui no-op si l'entree est fantome
+# ("Process not found"). Downtime ~1-2s, acceptable pour 1 instance.
+echo "==> PM2 (re)demarrage"
+$PM2 delete "$PM2_APP_NAME" >/dev/null 2>&1 || true
+$PM2 start deploy/pm2/ecosystem.config.cjs --env production
 $PM2 save   # persiste la liste des process (pour 'pm2 resurrect' au reboot)
 
 # --- Healthcheck local ---------------------------------------------------------
