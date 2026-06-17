@@ -33,6 +33,10 @@ export class ProvablyFairProof {
   digest!: string;
   committedBeforeDraw!: boolean;
   revealedAt?: Date | null;
+  // Liste ORDONNEE exacte des serials au moment du tirage (fige l'ensemble des
+  // participants pour une verification reproductible, insensible aux changements
+  // de statut ulterieurs comme un VOID/remboursement).
+  serials?: string[];
 }
 
 export type RaffleDocument = HydratedDocument<Raffle>;
@@ -123,6 +127,7 @@ export class Raffle {
       digest: { type: String },
       committedBeforeDraw: { type: Boolean, default: false },
       revealedAt: { type: Date, default: null },
+      serials: { type: [String], default: undefined },
     },
     default: null,
     _id: false,

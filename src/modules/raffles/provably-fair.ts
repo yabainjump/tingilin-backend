@@ -73,6 +73,7 @@ export function verifyDraw(params: {
   raffleId: string;
   orderedSerials: string[];
   expectedWinningIndex: number;
+  expectedTicketsetHash?: string;
 }): { valid: boolean; reasons: string[] } {
   const reasons: string[] = [];
 
@@ -87,6 +88,15 @@ export function verifyDraw(params: {
   }
 
   const ticketsetHash = computeTicketsetHash(params.orderedSerials);
+
+  // L'ensemble publie doit correspondre a l'empreinte engagee au tirage.
+  if (
+    params.expectedTicketsetHash &&
+    ticketsetHash !== String(params.expectedTicketsetHash)
+  ) {
+    reasons.push('TICKETSET_HASH_MISMATCH');
+  }
+
   const { winningIndex } = computeWinningIndex({
     serverSeed: params.serverSeed,
     raffleId: params.raffleId,

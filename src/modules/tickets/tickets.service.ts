@@ -27,35 +27,42 @@ export class TicketsService {
     const raffleObj = new Types.ObjectId(params.raffleId);
     const userObj = new Types.ObjectId(params.userId);
     const txObj = new Types.ObjectId(params.transactionId);
+    const quantity = Math.max(0, Math.floor(Number(params.quantity) || 0));
 
-    // Idempotence: si la finalisation se rejoue (race webhook + verify),
-    // ne pas recreer de tickets deja emis pour cette transaction.
-    const existing = await this.ticketModel
-      .find({ transactionId: txObj })
-      .exec();
-    if (existing.length >= params.quantity) {
-      return existing;
-    }
+    // Idempotent ET tolerant aux collisions de serial: a chaque tour on
+    // (re)compte ce qui est REELLEMENT en base pour cette transaction et on ne
+    // cree que le manque. Avec l'index unique {raffleId,serial}, une collision en
+    // mode ordered:false insere les non-collidants; on reboucle pour completer le
+    // reste avec de nouveaux serials -> ni doublon (jamais plus que `quantity`),
+    // ni manque. Couvre aussi le rejeu (webhook + verify).
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const existingCount = await this.ticketModel
+        .countDocuments({ transactionId: txObj })
+        .exec();
+      const remaining = quantity - existingCount;
+      if (remaining <= 0) break;
 
-    const remaining = params.quantity - existing.length;
-    const docs = Array.from({ length: remaining }).map(() => ({
-      raffleId: raffleObj,
-      userId: userObj,
-      transactionId: txObj,
-      serial: this.generateSerial(params.raffleId),
-      status: 'ACTIVE' as const,
-    }));
-
-    try {
-      return await this.ticketModel.insertMany(docs, { ordered: false });
-    } catch {
-
-      const retryDocs = docs.map((d) => ({
-        ...d,
+      const docs = Array.from({ length: remaining }).map(() => ({
+        raffleId: raffleObj,
+        userId: userObj,
+        transactionId: txObj,
         serial: this.generateSerial(params.raffleId),
+        status: 'ACTIVE' as const,
       }));
-      return await this.ticketModel.insertMany(retryDocs, { ordered: false });
+
+      try {
+        await this.ticketModel.insertMany(docs, { ordered: false });
+        break;
+      } catch (err: any) {
+        // Seules les collisions de cle dupliquee sont rejouables.
+        const isDup =
+          Number(err?.code ?? 0) === 11000 || Array.isArray(err?.writeErrors);
+        if (!isDup) throw err;
+        // Certains docs se sont inseres: le prochain tour recompte et complete.
+      }
     }
+
+    return this.ticketModel.find({ transactionId: txObj }).exec();
   }
 
   private generateSerial(raffleId: string) {

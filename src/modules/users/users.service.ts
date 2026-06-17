@@ -549,6 +549,25 @@ export class UsersService {
       });
   }
 
+  // Filtre de garde anti double-credit qui tolere l'ABSENCE du champ en base.
+  // Sur les documents crees AVANT l'ajout du champ, { field: 0 } ne matche pas
+  // (Mongo n'assimile pas champ-absent a 0). On accepte donc 0, null et absent
+  // quand la valeur courante est 0 (premier palier). L'atomicite est preservee:
+  // une fois le champ incremente, il ne vaut plus 0/null/absent.
+  private rewardGuardFilter(
+    userId: Types.ObjectId,
+    field: 'loyaltyRewardsGranted' | 'referralRewardsGranted',
+    currentValue: number,
+  ): Record<string, any> {
+    if (currentValue === 0) {
+      return {
+        _id: userId,
+        $or: [{ [field]: 0 }, { [field]: { $exists: false } }, { [field]: null }],
+      };
+    }
+    return { _id: userId, [field]: currentValue };
+  }
+
   async evaluateMilestones(userId: string) {
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException('Invalid user id');
@@ -621,7 +640,7 @@ export class UsersService {
 
       const res = await this.userModel
         .updateOne(
-          { _id: uid, loyaltyRewardsGranted: currentLoyaltyRewards },
+          this.rewardGuardFilter(uid, 'loyaltyRewardsGranted', currentLoyaltyRewards),
           {
             $inc: { loyaltyRewardsGranted: delta, freeTicketsBalance: delta },
             $push: { rewardHistory: { $each: historyItems, $slice: -100 } },
@@ -676,10 +695,11 @@ export class UsersService {
 
           const res = await this.userModel
             .updateOne(
-              {
-                _id: inviter._id,
-                referralRewardsGranted: currentReferralRewards,
-              },
+              this.rewardGuardFilter(
+                inviter._id,
+                'referralRewardsGranted',
+                currentReferralRewards,
+              ),
               {
                 $inc: {
                   referralRewardsGranted: delta,

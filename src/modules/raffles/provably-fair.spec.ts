@@ -110,4 +110,28 @@ describe('provably-fair', () => {
     expect(result.valid).toBe(false);
     expect(result.reasons).toContain('WINNING_INDEX_MISMATCH');
   });
+
+  it('verifyDraw fails when the published set does not match the committed ticketsetHash', () => {
+    const serverSeed = generateServerSeed();
+    const commitment = hashServerSeed(serverSeed);
+    const ticketsetHash = computeTicketsetHash(serials);
+    const { winningIndex } = computeWinningIndex({
+      serverSeed,
+      raffleId,
+      ticketsetHash,
+      ticketCount: serials.length,
+    });
+
+    const result = verifyDraw({
+      serverSeed,
+      commitment,
+      raffleId,
+      orderedSerials: serials,
+      expectedWinningIndex: winningIndex,
+      expectedTicketsetHash: 'deadbeefdeadbeef', // engagement different
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.reasons).toContain('TICKETSET_HASH_MISMATCH');
+  });
 });

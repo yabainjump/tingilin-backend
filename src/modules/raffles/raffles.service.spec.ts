@@ -129,7 +129,7 @@ describe('RafflesService', () => {
     expect(match?.productId).toBeUndefined();
   });
 
-  it('drawWinner selects a provably-fair winner deterministically and records the proof', async () => {
+  it('drawWinner claims the draw atomically and records a verifiable proof', async () => {
     const raffleId = new Types.ObjectId();
     const winnerTicketId = new Types.ObjectId();
     const winnerUserId = new Types.ObjectId();
@@ -140,8 +140,8 @@ describe('RafflesService', () => {
       save: jest.fn().mockResolvedValue(undefined),
     };
 
-    // findById est appele 2x: en clair (drawWinner) et avec select/lean
-    // (pickProvablyFairWinner, pour lire le seed engage).
+    // findById: drawWinner (.exec -> raffleDoc) + pickProvablyFairWinner
+    // (.select.lean.exec -> seed engage).
     raffleModelMock.findById.mockReturnValue({
       exec: jest.fn().mockResolvedValue(raffleDoc),
       select: jest.fn().mockReturnValue({
@@ -175,6 +175,17 @@ describe('RafflesService', () => {
       exec: jest.fn().mockResolvedValue({ acknowledged: true }),
     });
 
+    // Claim atomique -> renvoie le document "reclame".
+    const claimedDoc: any = {
+      _id: raffleId,
+      status: RaffleStatus.DRAWN,
+      drawnAt: new Date(),
+      winner: { ticketId: winnerTicketId, userId: winnerUserId },
+    };
+    raffleModelMock.findOneAndUpdate.mockReturnValue({
+      exec: jest.fn().mockResolvedValue(claimedDoc),
+    });
+
     jest
       .spyOn(service as any, 'notifyDrawStarted')
       .mockResolvedValue(undefined);
@@ -189,25 +200,37 @@ describe('RafflesService', () => {
       raffleId,
       status: 'ACTIVE',
     });
+
+    // Claim ATOMIQUE: garde winnerTicketId:null, et la preuve (seed + serials
+    // figes) est ecrite dans le meme $set.
+    expect(raffleModelMock.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: raffleId, winnerTicketId: null },
+      expect.objectContaining({
+        $set: expect.objectContaining({
+          status: RaffleStatus.DRAWN,
+          winnerTicketId,
+          winnerUserId,
+          drawServerSeed: 'a'.repeat(64),
+          provablyFair: expect.objectContaining({
+            algorithm: 'HMAC-SHA256',
+            ticketCount: 1,
+            winningIndex: 0,
+            committedBeforeDraw: true,
+            ticketsetHash: expect.any(String),
+            digest: expect.any(String),
+            serials: ['TGL-TEST-ABCD1234'],
+          }),
+        }),
+      }),
+      { new: true },
+    );
+
     expect(ticketModelMock.updateOne).toHaveBeenCalledWith(
       { _id: winnerTicketId },
       { $set: { status: 'WINNER' } },
     );
     expect(result?.winner?.ticketId).toEqual(winnerTicketId);
     expect(result?.winner?.userId).toEqual(winnerUserId);
-
-    // La preuve verifiable est enregistree et le seed revele.
-    expect(raffleDoc.drawServerSeed).toBe('a'.repeat(64));
-    expect(raffleDoc.provablyFair).toEqual(
-      expect.objectContaining({
-        algorithm: 'HMAC-SHA256',
-        ticketCount: 1,
-        winningIndex: 0,
-        committedBeforeDraw: true,
-        ticketsetHash: expect.any(String),
-        digest: expect.any(String),
-      }),
-    );
     expect(notificationsMock.create).toHaveBeenCalled();
   });
 });

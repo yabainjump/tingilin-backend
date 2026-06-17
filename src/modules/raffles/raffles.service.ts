@@ -983,6 +983,7 @@ export class RafflesService {
       ticketsetHash: string;
       winningIndex: number;
       digest: string;
+      serials: string[];
     } | null;
   }> {
     const rid =
@@ -1051,6 +1052,7 @@ export class RafflesService {
         ticketsetHash,
         winningIndex,
         digest,
+        serials: orderedSerials,
       },
     };
   }
@@ -1087,21 +1089,27 @@ export class RafflesService {
       return { ...base, revealed: null };
     }
 
-    // Reconstruit l'ensemble EXACT des participants au moment du tirage:
-    // tickets ACTIVE a l'epoque (le gagnant a depuis le statut WINNER), tries
-    // par _id croissant comme lors de la selection.
-    const tickets: any[] = await this.ticketModel
-      .find({ raffleId: new Types.ObjectId(String(raffle._id)) })
-      .sort({ _id: 1 })
-      .select('_id serial status')
-      .lean()
-      .exec();
+    // L'ensemble des participants est FIGE au tirage (proof.serials): la
+    // verification est reproductible meme si des tickets changent de statut
+    // ensuite (VOID/remboursement). Repli pour les anciens tirages sans serials
+    // enregistres: reconstruction depuis les tickets ACTIVE/WINNER.
+    let orderedSerials: string[] = Array.isArray(proof.serials)
+      ? proof.serials.map((s: any) => String(s ?? '').trim())
+      : [];
 
-    const orderedSerials = tickets
-      .filter((t) =>
-        ['ACTIVE', 'WINNER'].includes(String(t?.status ?? '').toUpperCase()),
-      )
-      .map((t) => String(t?.serial ?? t?._id ?? '').trim());
+    if (!orderedSerials.length) {
+      const tickets: any[] = await this.ticketModel
+        .find({ raffleId: new Types.ObjectId(String(raffle._id)) })
+        .sort({ _id: 1 })
+        .select('_id serial status')
+        .lean()
+        .exec();
+      orderedSerials = tickets
+        .filter((t) =>
+          ['ACTIVE', 'WINNER'].includes(String(t?.status ?? '').toUpperCase()),
+        )
+        .map((t) => String(t?.serial ?? t?._id ?? '').trim());
+    }
 
     const winningTicketSerial =
       typeof proof.winningIndex === 'number'
@@ -1114,6 +1122,7 @@ export class RafflesService {
       raffleId: String(raffle._id),
       orderedSerials,
       expectedWinningIndex: Number(proof.winningIndex),
+      expectedTicketsetHash: proof.ticketsetHash,
     });
 
     return {
@@ -1138,30 +1147,93 @@ export class RafflesService {
     };
   }
 
-  private applyDrawProof(
+  private buildDrawProofUpdate(
+    draw: Awaited<ReturnType<RafflesService['pickProvablyFairWinner']>>,
+    drawnAt: Date,
+  ): Record<string, any> {
+    return {
+      drawServerSeed: draw.serverSeed,
+      drawCommitment: draw.commitment,
+      provablyFair: draw.proof
+        ? {
+            ...draw.proof,
+            committedBeforeDraw: draw.committedBeforeDraw,
+            revealedAt: drawnAt,
+          }
+        : null,
+    };
+  }
+
+  /**
+   * Reclame le tirage de maniere ATOMIQUE (un seul appel concurrent reussit,
+   * grace au guard winnerTicketId:null) puis declenche les effets de bord
+   * (ticket WINNER + notifications) UNE SEULE FOIS. Empeche le double-tirage
+   * entre le scheduler (autoClose) et un tirage manuel admin.
+   */
+  private async performAtomicDraw(
     raffle: any,
-    draw: {
-      serverSeed: string;
-      commitment: string;
-      committedBeforeDraw: boolean;
-      proof: {
-        algorithm: string;
-        ticketCount: number;
-        ticketsetHash: string;
-        winningIndex: number;
-        digest: string;
-      } | null;
-    },
-  ): void {
-    raffle.drawServerSeed = draw.serverSeed;
-    raffle.drawCommitment = draw.commitment;
-    raffle.provablyFair = draw.proof
-      ? {
-          ...draw.proof,
-          committedBeforeDraw: draw.committedBeforeDraw,
-          revealedAt: raffle.drawnAt ?? new Date(),
-        }
-      : null;
+    draw: Awaited<ReturnType<RafflesService['pickProvablyFairWinner']>>,
+  ): Promise<{ claimed: boolean; doc: any }> {
+    const ticket = draw.ticket;
+    if (!ticket) return { claimed: false, doc: raffle };
+
+    const drawnAt = new Date();
+    const winnerObj = {
+      userId: ticket.userId,
+      ticketId: ticket._id,
+      drawnAt,
+      isPublished: true,
+      fulfillmentStatus: WinnerFulfillmentStatus.PENDING_VERIFICATION,
+      fulfillmentUpdatedAt: new Date(),
+    };
+
+    // { winnerTicketId: null } matche aussi un champ absent (Mongo).
+    const claimed: any = await this.raffleModel
+      .findOneAndUpdate(
+        { _id: raffle._id, winnerTicketId: null },
+        {
+          $set: {
+            status: RaffleStatus.DRAWN,
+            winnerTicketId: ticket._id,
+            winnerUserId: ticket.userId,
+            drawnAt,
+            winner: winnerObj,
+            ...this.buildDrawProofUpdate(draw, drawnAt),
+          },
+        },
+        { new: true },
+      )
+      .exec();
+
+    if (!claimed) {
+      // Un autre process a deja reclame le tirage -> idempotent, AUCUNE re-notif.
+      const current: any = await this.raffleModel
+        .findById(raffle._id)
+        .lean()
+        .exec();
+      return { claimed: false, doc: current };
+    }
+
+    await this.ticketModel
+      .updateOne({ _id: ticket._id }, { $set: { status: 'WINNER' } })
+      .exec();
+
+    const participantIds = await this.participantUserIds(raffle._id);
+    await this.notifyDrawStarted(claimed, participantIds);
+    await this.notifications.create({
+      userId: String(ticket.userId),
+      type: 'WINNER_ANNOUNCED',
+      title: '🎉 Félicitations !',
+      body: `Tu as gagné la tombola 🎉`,
+      data: {
+        raffleId: String(raffle._id),
+        ticketId: String(ticket._id),
+        deepLink: `/tabs/ticket-details/${String(raffle._id)}`,
+      },
+    });
+    await this.notifyDrawResults(claimed, String(ticket.userId), participantIds);
+
+    return { claimed: true, doc: claimed };
   }
 
   private async pickRandomActiveTicket(
@@ -1204,56 +1276,19 @@ export class RafflesService {
       throw new BadRequestException('No tickets sold');
     }
 
-    const participantIds = await this.participantUserIds(raffle._id);
-    await this.notifyDrawStarted(raffle, participantIds);
-
-    // legacy fields (tu les avais déjà)
-    raffle.winnerTicketId = winner._id as any;
-    raffle.winnerUserId = winner.userId as any;
-    raffle.drawnAt = new Date() as any;
-
-    // new winner object (si présent dans schema)
-    raffle.winner = {
-      userId: winner.userId,
-      ticketId: winner._id,
-      drawnAt: raffle.drawnAt,
-      isPublished: true,
-      fulfillmentStatus: WinnerFulfillmentStatus.PENDING_VERIFICATION,
-      fulfillmentUpdatedAt: new Date(),
-    };
-
-    // Revele le seed et enregistre la preuve verifiable du tirage.
-    this.applyDrawProof(raffle, draw);
-
-    raffle.status = RaffleStatus.DRAWN;
-
-    await raffle.save();
-
-    await this.ticketModel
-      .updateOne({ _id: winner._id }, { $set: { status: 'WINNER' } })
-      .exec();
-
-    await this.notifications.create({
-      userId: String(winner.userId),
-      type: 'WINNER_ANNOUNCED',
-      title: '🎉 Félicitations !',
-      body: `Tu as gagné la tombola 🎉`,
-      data: {
-        raffleId: String(raffle._id),
-        ticketId: String(winner._id),
-        deepLink: `/tabs/ticket-details/${String(raffle._id)}`,
-      },
-    });
-
-    await this.notifyDrawResults(raffle, String(winner.userId), participantIds);
+    // Claim atomique partage avec le tirage automatique (anti double-tirage).
+    const { claimed, doc } = await this.performAtomicDraw(raffle, draw);
+    if (!claimed) {
+      throw new BadRequestException('Winner already drawn');
+    }
 
     return {
       raffleId: raffle._id.toString(),
-      status: raffle.status,
+      status: doc.status,
       winnerTicketId: winner._id.toString(),
       winnerUserId: String(winner.userId),
       serial: winner.serial,
-      drawnAt: raffle.drawnAt,
+      drawnAt: doc.drawnAt,
     };
   }
 
@@ -1454,56 +1489,27 @@ export class RafflesService {
     const draw = await this.pickProvablyFairWinner(raffle._id);
     const ticket = draw.ticket;
     if (!ticket) {
-      raffle.status = RaffleStatus.CLOSED;
-      raffle.winner = null;
-      await raffle.save();
-      return { ok: true, status: raffle.status, winner: null };
+      // Cloture sans gagnant (atomique, sans ecraser un tirage deja effectue).
+      await this.raffleModel
+        .updateOne(
+          { _id: raffle._id, status: { $ne: RaffleStatus.DRAWN } },
+          { $set: { status: RaffleStatus.CLOSED, winner: null } },
+        )
+        .exec();
+      return { ok: true, status: RaffleStatus.CLOSED, winner: null };
     }
 
-    const participantIds = await this.participantUserIds(raffle._id);
-    await this.notifyDrawStarted(raffle, participantIds);
+    const { claimed, doc } = await this.performAtomicDraw(raffle, draw);
+    if (!claimed) {
+      return {
+        ok: true,
+        alreadyDrawn: true,
+        status: doc?.status,
+        winner: doc?.winner ?? null,
+      };
+    }
 
-    // marquer le ticket gagnant (si ton enum TicketStatus l'accepte)
-    await this.ticketModel
-      .updateOne({ _id: ticket._id }, { $set: { status: 'WINNER' } })
-      .exec();
-
-    raffle.status = RaffleStatus.DRAWN;
-
-    // set winner legacy + new
-    raffle.winnerTicketId = ticket._id as any;
-    raffle.winnerUserId = ticket.userId as any;
-    raffle.drawnAt = new Date() as any;
-
-    raffle.winner = {
-      userId: ticket.userId,
-      ticketId: ticket._id,
-      drawnAt: raffle.drawnAt,
-      isPublished: true,
-      fulfillmentStatus: WinnerFulfillmentStatus.PENDING_VERIFICATION,
-      fulfillmentUpdatedAt: new Date(),
-    };
-
-    // Revele le seed et enregistre la preuve verifiable du tirage.
-    this.applyDrawProof(raffle, draw);
-
-    await raffle.save();
-
-    await this.notifications.create({
-      userId: String(ticket.userId),
-      type: 'WINNER_ANNOUNCED',
-      title: '🎉 Félicitations !',
-      body: `Tu as gagné la tombola 🎉`,
-      data: {
-        raffleId: String(raffle._id),
-        ticketId: String(ticket._id),
-        deepLink: `/tabs/ticket-details/${String(raffle._id)}`,
-      },
-    });
-
-    await this.notifyDrawResults(raffle, String(ticket.userId), participantIds);
-
-    return { ok: true, status: raffle.status, winner: raffle.winner };
+    return { ok: true, status: doc.status, winner: doc.winner };
   }
 
   // ✅ Auto-close + auto-draw (appelé par cron)
