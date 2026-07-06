@@ -658,6 +658,12 @@ export class PaymentsService {
     if (provider === 'MOCK' && !this.mockPaymentsEnabled()) {
       throw new BadRequestException('Mock payments are disabled');
     }
+
+    // Validate the provider before persisting a PENDING transaction. Otherwise a
+    // configuration error leaves an unusable idempotent intent without checkout URL.
+    if (provider === 'DIGIKUNTZ') {
+      this.digikuntz.assertConfigured();
+    }
     let digikuntzInput:
       | {
           userEmail: string;
@@ -718,6 +724,11 @@ export class PaymentsService {
         .sort({ createdAt: -1 })
         .exec();
       if (existing) {
+        if (existing.provider === 'DIGIKUNTZ' && !existing.paymentLink) {
+          throw new ConflictException(
+            'Cette tentative de paiement est incomplète. Recharge la page puis réessaie.',
+          );
+        }
         return this.buildIntentResponse(existing, unit, true);
       }
     }
@@ -772,6 +783,11 @@ export class PaymentsService {
           .exec();
 
         if (existing) {
+          if (existing.provider === 'DIGIKUNTZ' && !existing.paymentLink) {
+            throw new ConflictException(
+              'Cette tentative de paiement est incomplète. Recharge la page puis réessaie.',
+            );
+          }
           return this.buildIntentResponse(existing, unit, true);
         }
       }

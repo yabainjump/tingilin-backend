@@ -125,6 +125,46 @@ describe('DigikuntzPaymentsService', () => {
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
+  it('derives the callback URL from PUBLIC_APP_URL', async () => {
+    const { service, post } = createService({
+      DIGIKUNTZ_CALLBACK_URL: '',
+      PUBLIC_APP_URL: 'https://tinguilin.yaba-in.com/',
+    });
+    post.mockReturnValue(
+      of({
+        data: {
+          id: 'provider-id',
+          status: 'payin_pending',
+          data: { paymentLink: 'https://checkout.example.com/pay/test' },
+        },
+      } as AxiosResponse),
+    );
+
+    await service.createPayin({
+      amount: 100,
+      reason: 'Test',
+      userEmail: 'user@example.com',
+      userPhone: '691224472',
+      userCountry: 'Cameroon',
+      senderName: 'Test User',
+    });
+
+    expect(post.mock.calls[0][1]).toMatchObject({
+      callbackUrl: 'https://tinguilin.yaba-in.com/tabs/participations',
+    });
+  });
+
+  it('rejects a non-HTTP callback URL before calling Digikuntz', () => {
+    const { service, post } = createService({
+      DIGIKUNTZ_CALLBACK_URL: 'javascript:alert(1)',
+    });
+
+    expect(() => service.assertConfigured()).toThrow(
+      ServiceUnavailableException,
+    );
+    expect(post).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['payin_pending', 'pending'],
     ['transaction_payin_success', 'success'],

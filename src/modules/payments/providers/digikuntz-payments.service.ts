@@ -74,9 +74,48 @@ export class DigikuntzPaymentsService {
     this.secretKey = String(
       this.config.get<string>('DIGIKUNTZ_SECRET_KEY') ?? '',
     ).trim();
-    this.callbackUrl = String(
+    this.callbackUrl = this.resolveCallbackUrl();
+  }
+
+  private resolveCallbackUrl(): string {
+    const configured = String(
       this.config.get<string>('DIGIKUNTZ_CALLBACK_URL') ?? '',
     ).trim();
+    if (configured) return configured;
+
+    const publicAppUrl = String(
+      this.config.get<string>('PUBLIC_APP_URL') ??
+        this.config.get<string>('APP_WEB_URL') ??
+        '',
+    ).trim();
+    if (!publicAppUrl) return '';
+
+    try {
+      return new URL('/tabs/participations', publicAppUrl).toString();
+    } catch {
+      return '';
+    }
+  }
+
+  assertConfigured(): void {
+    this.requiredEnv('DIGIKUNTZ_BASE_URL');
+    this.requiredEnv('DIGIKUNTZ_USER_ID');
+    this.requiredEnv('DIGIKUNTZ_SECRET_KEY');
+    const callbackUrl = this.requiredEnv('DIGIKUNTZ_CALLBACK_URL');
+
+    let parsed: URL;
+    try {
+      parsed = new URL(callbackUrl);
+    } catch {
+      throw new ServiceUnavailableException(
+        'Invalid payment config: DIGIKUNTZ_CALLBACK_URL must be an absolute URL',
+      );
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new ServiceUnavailableException(
+        'Invalid payment config: DIGIKUNTZ_CALLBACK_URL must use HTTP(S)',
+      );
+    }
   }
 
   private requiredEnv(name: string): string {
@@ -160,9 +199,7 @@ export class DigikuntzPaymentsService {
   }
 
   private headers() {
-    this.requiredEnv('DIGIKUNTZ_BASE_URL');
-    this.requiredEnv('DIGIKUNTZ_USER_ID');
-    this.requiredEnv('DIGIKUNTZ_SECRET_KEY');
+    this.assertConfigured();
     return {
       'x-user-id': this.userId,
       'x-secret-key': this.secretKey,
@@ -194,7 +231,8 @@ export class DigikuntzPaymentsService {
   }) {
     try {
       const url = `${this.baseUrl}/transaction`;
-      const callbackUrl = this.requiredEnv('DIGIKUNTZ_CALLBACK_URL');
+      this.assertConfigured();
+      const callbackUrl = this.callbackUrl;
       const body = {
         estimation: input.amount,
         raisonForTransfer: input.reason,

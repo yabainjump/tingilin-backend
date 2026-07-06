@@ -15,7 +15,10 @@ describe('PaymentsService', () => {
   let service: PaymentsService;
   let configService: { get: jest.Mock };
   let txModelMock: Record<string, jest.Mock>;
-  let digikuntzMock: { getTransaction: jest.Mock };
+  let digikuntzMock: {
+    getTransaction: jest.Mock;
+    assertConfigured: jest.Mock;
+  };
 
   beforeEach(async () => {
     txModelMock = {
@@ -41,7 +44,10 @@ describe('PaymentsService', () => {
         return values[key];
       }),
     };
-    digikuntzMock = { getTransaction: jest.fn() };
+    digikuntzMock = {
+      getTransaction: jest.fn(),
+      assertConfigured: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
