@@ -7,27 +7,35 @@ const desiredIndexes: Array<{
   name: string;
   key: Record<string, 1>;
   optionalField: string;
+  unique: boolean;
 }> = [
   {
     name: 'provider_1_providerTransactionId_1',
     key: { provider: 1, providerTransactionId: 1 },
     optionalField: 'providerTransactionId',
+    unique: true,
   },
   {
     name: 'provider_1_providerRef_1',
     key: { provider: 1, providerRef: 1 },
     optionalField: 'providerRef',
+    unique: false,
   },
   {
     name: 'userId_1_idempotencyKey_1',
     key: { userId: 1, idempotencyKey: 1 },
     optionalField: 'idempotencyKey',
+    unique: true,
   },
 ];
 
-function hasExpectedOptions(index: Record<string, any>, optionalField: string) {
+function hasExpectedOptions(
+  index: Record<string, any>,
+  optionalField: string,
+  unique: boolean,
+) {
   return (
-    index.unique === true &&
+    (index.unique === true) === unique &&
     index.sparse !== true &&
     index.partialFilterExpression?.[optionalField]?.$type === 'string'
   );
@@ -57,7 +65,7 @@ async function migratePaymentIndexes() {
     );
     if (
       current?.name === desired.name &&
-      hasExpectedOptions(current, desired.optionalField)
+      hasExpectedOptions(current, desired.optionalField, desired.unique)
     ) {
       console.log(`Payment index already valid: ${desired.name}`);
       continue;
@@ -70,7 +78,7 @@ async function migratePaymentIndexes() {
 
     await collection.createIndex(desired.key, {
       name: desired.name,
-      unique: true,
+      unique: desired.unique,
       partialFilterExpression: {
         [desired.optionalField]: { $type: 'string' },
       },

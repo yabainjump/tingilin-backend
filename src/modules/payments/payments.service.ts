@@ -1880,6 +1880,7 @@ export class PaymentsService {
     if (!tx && providerRef) {
       tx = await this.txModel
         .findOne({ provider: 'DIGIKUNTZ', providerRef })
+        .sort({ createdAt: -1 })
         .exec();
     }
 

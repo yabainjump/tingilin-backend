@@ -66,7 +66,6 @@ TransactionSchema.index(
 TransactionSchema.index(
   { provider: 1, providerRef: 1 },
   {
-    unique: true,
     partialFilterExpression: { providerRef: { $type: 'string' } },
   },
 );
