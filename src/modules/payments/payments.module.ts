@@ -14,6 +14,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { UsersModule } from '../users/users.module';
 import { PaymentsAdminController } from './payments.admin.controller';
 import { PaymentsWebhookController } from './payments.webhook.controller';
+import { PaymentIndexesService } from './payment-indexes.service';
 
 @Module({
   imports: [
@@ -34,7 +35,7 @@ import { PaymentsWebhookController } from './payments.webhook.controller';
     PaymentsAdminController,
     PaymentsWebhookController,
   ],
-  providers: [PaymentsService, DigikuntzPaymentsService],
+  providers: [PaymentsService, DigikuntzPaymentsService, PaymentIndexesService],
   exports: [PaymentsService],
 })
 export class PaymentsModule {}
