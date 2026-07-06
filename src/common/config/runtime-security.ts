@@ -33,9 +33,7 @@ export function getRequiredSecret(
     minLength?: number;
   },
 ): string {
-  const value = String(config.get<string>(key, ''))
-    .trim()
-    .replace(/\s+/g, '');
+  const value = String(config.get<string>(key, '')).trim().replace(/\s+/g, '');
   const minLength = Math.max(16, Number(opts?.minLength ?? 32));
 
   if (!value) {
@@ -57,13 +55,16 @@ export function getRequiredSecret(
 
 export function getWebhookSignatureMode(
   config: ConfigService,
-): 'hmac' | 'legacy-static' {
-  const raw = String(config.get<string>('DIGIKUNTZ_WEBHOOK_SIGNATURE_MODE', 'hmac'))
+): 'provider-verify' | 'hmac' | 'legacy-static' {
+  const raw = String(
+    config.get<string>('DIGIKUNTZ_WEBHOOK_SIGNATURE_MODE', 'provider-verify'),
+  )
     .trim()
     .toLowerCase();
 
   if (raw === 'legacy-static') return 'legacy-static';
-  return 'hmac';
+  if (raw === 'hmac') return 'hmac';
+  return 'provider-verify';
 }
 
 export function assertRuntimeSecurityConfig(config: ConfigService): void {
@@ -79,9 +80,10 @@ export function assertRuntimeSecurityConfig(config: ConfigService): void {
     throw new Error('SETUP_ENABLED must remain disabled in production');
   }
 
-  getRequiredSecret(config, 'DIGIKUNTZ_WEBHOOK_SECRET', { minLength: 24 });
-
   const signatureMode = getWebhookSignatureMode(config);
+  if (signatureMode !== 'provider-verify') {
+    getRequiredSecret(config, 'DIGIKUNTZ_WEBHOOK_SECRET', { minLength: 24 });
+  }
   const allowInsecureWebhookMode = parseBooleanFlag(
     config.get<string>('ALLOW_INSECURE_WEBHOOK_SIGNATURE', 'false'),
   );

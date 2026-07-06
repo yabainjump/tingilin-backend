@@ -16,17 +16,22 @@ import { MockConfirmDto } from './dto/mock-confirm.dto';
 import { Transaction, TransactionDocument } from './schemas/transaction.schema';
 import { ParticipationsService } from '../participations/participations.service';
 import { MockFailDto } from './dto/mock-fail.dto';
-import { DigikuntzPaymentsService } from './providers/digikuntz-payments.service';
+import {
+  DigikuntzPaymentsService,
+  normalizeDigikuntzStatus,
+} from './providers/digikuntz-payments.service';
 import { DigikuntzVerifyDto } from './dto/digikuntz-verify.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RaffleStatus } from '../raffles/schemas/raffle.schema';
 import { UsersService } from '../users/users.service';
 import { CreateFreeTicketDto } from './dto/create-free-ticket.dto';
-import { LedgerEntry, LedgerEntryDocument } from './schemas/ledger-entry.schema';
+import {
+  LedgerEntry,
+  LedgerEntryDocument,
+} from './schemas/ledger-entry.schema';
 import {
   getRequiredSecret,
   getWebhookSignatureMode,
-  isProductionEnv,
   parseBooleanFlag,
 } from '../../common/config/runtime-security';
 
@@ -74,7 +79,9 @@ export class PaymentsService {
   }
 
   private parseDashboardGranularity(raw?: string): DashboardGranularity {
-    const value = String(raw ?? 'DAY').trim().toUpperCase();
+    const value = String(raw ?? 'DAY')
+      .trim()
+      .toUpperCase();
     if (value === 'MONTH') return 'MONTH';
     if (value === 'YEAR') return 'YEAR';
     return 'DAY';
@@ -86,7 +93,10 @@ export class PaymentsService {
     return '%Y-%m-%d %H';
   }
 
-  private parseDashboardDateInput(raw: string, fieldName: 'dateFrom' | 'dateTo'): Date {
+  private parseDashboardDateInput(
+    raw: string,
+    fieldName: 'dateFrom' | 'dateTo',
+  ): Date {
     const parsed = new Date(String(raw ?? '').trim());
     if (Number.isNaN(parsed.getTime())) {
       throw new BadRequestException(`Invalid ${fieldName}`);
@@ -140,7 +150,9 @@ export class PaymentsService {
     const hasCustomTo = customToRaw.length > 0;
 
     if (hasCustomFrom !== hasCustomTo) {
-      throw new BadRequestException('dateFrom and dateTo must be provided together');
+      throw new BadRequestException(
+        'dateFrom and dateTo must be provided together',
+      );
     }
 
     if (hasCustomFrom && hasCustomTo) {
@@ -148,7 +160,9 @@ export class PaymentsService {
       const to = this.parseDashboardDateInput(customToRaw, 'dateTo');
 
       if (from.getTime() > to.getTime()) {
-        throw new BadRequestException('dateFrom must be less than or equal to dateTo');
+        throw new BadRequestException(
+          'dateFrom must be less than or equal to dateTo',
+        );
       }
 
       const durationMs = to.getTime() - from.getTime() + 1;
@@ -167,7 +181,9 @@ export class PaymentsService {
 
     if (granularity === 'MONTH') {
       const to = now;
-      const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      const from = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+      );
       from.setUTCMonth(from.getUTCMonth() - 11);
 
       const previousTo = new Date(from.getTime() - 1);
@@ -205,7 +221,9 @@ export class PaymentsService {
     const from = new Date(now.getTime() - 23 * 60 * 60 * 1000);
 
     const previousTo = new Date(from.getTime() - 1);
-    const previousFrom = new Date(previousTo.getTime() - (to.getTime() - from.getTime()));
+    const previousFrom = new Date(
+      previousTo.getTime() - (to.getTime() - from.getTime()),
+    );
 
     return {
       from,
@@ -284,7 +302,10 @@ export class PaymentsService {
     return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}`;
   }
 
-  private toBucketLabel(key: string, granularity: DashboardGranularity): string {
+  private toBucketLabel(
+    key: string,
+    granularity: DashboardGranularity,
+  ): string {
     if (granularity === 'YEAR') {
       return key;
     }
@@ -337,7 +358,9 @@ export class PaymentsService {
               $sum: { $cond: [{ $eq: ['$status', 'SUCCESS'] }, 1, 0] },
             },
             ticketsSold: {
-              $sum: { $cond: [{ $eq: ['$status', 'SUCCESS'] }, '$quantity', 0] },
+              $sum: {
+                $cond: [{ $eq: ['$status', 'SUCCESS'] }, '$quantity', 0],
+              },
             },
             cashIn: {
               $sum: { $cond: [this.xafCondition('SUCCESS'), '$amount', 0] },
@@ -418,9 +441,14 @@ export class PaymentsService {
     return value.toLowerCase();
   }
 
-  private firstNonEmpty(...values: Array<string | null | undefined>): string {
+  private firstNonEmpty(...values: unknown[]): string {
     for (const value of values) {
-      const normalized = String(value ?? '').trim();
+      const normalized =
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean'
+          ? String(value).trim()
+          : '';
       if (
         normalized &&
         normalized.toLowerCase() !== 'null' &&
@@ -433,7 +461,9 @@ export class PaymentsService {
   }
 
   private normalizePhone(input?: string | null): string {
-    return String(input ?? '').replace(/\s|-/g, '').trim();
+    return String(input ?? '')
+      .replace(/\s|-/g, '')
+      .trim();
   }
 
   private normalizeDigikuntzCountry(input?: string | null): string {
@@ -503,10 +533,17 @@ export class PaymentsService {
 
     const keyPattern = error?.keyPattern ?? {};
     const message = String(error?.message ?? '');
-    return Boolean(keyPattern?.[fieldName]) || new RegExp(fieldName, 'i').test(message);
+    return (
+      Boolean(keyPattern?.[fieldName]) ||
+      new RegExp(fieldName, 'i').test(message)
+    );
   }
 
-  private buildIntentResponse(tx: any, ticketUnitPrice: number, idempotent = false) {
+  private buildIntentResponse(
+    tx: any,
+    ticketUnitPrice: number,
+    idempotent = false,
+  ) {
     return {
       transactionId: tx._id.toString(),
       provider: tx.provider,
@@ -517,7 +554,9 @@ export class PaymentsService {
       ticketUnitPrice,
       paymentLink: tx.paymentLink ?? undefined,
       paymentWithTaxes:
-        tx.paymentWithTaxes !== undefined ? Number(tx.paymentWithTaxes) : undefined,
+        tx.paymentWithTaxes !== undefined
+          ? Number(tx.paymentWithTaxes)
+          : undefined,
       idempotent,
     };
   }
@@ -529,7 +568,10 @@ export class PaymentsService {
     provider: string;
     lookbackMinutes?: number;
   }): Promise<TransactionDocument | null> {
-    const lookbackMinutes = Math.max(1, Number(params.lookbackMinutes ?? 15) || 15);
+    const lookbackMinutes = Math.max(
+      1,
+      Number(params.lookbackMinutes ?? 15) || 15,
+    );
     const since = new Date(Date.now() - lookbackMinutes * 60 * 1000);
 
     return this.txModel
@@ -642,7 +684,10 @@ export class PaymentsService {
         String((user as any)?.email ?? '').trim(),
       );
       const userPhone = this.normalizePhone(
-        this.firstNonEmpty(dto.userPhone, String((user as any)?.phone ?? '').trim()),
+        this.firstNonEmpty(
+          dto.userPhone,
+          String((user as any)?.phone ?? '').trim(),
+        ),
       );
       const userCountry = this.normalizeDigikuntzCountry(
         this.firstNonEmpty(dto.userCountry, defaultCountry),
@@ -687,7 +732,9 @@ export class PaymentsService {
         ? participation.blockedUntil
         : null;
     if (blockedUntil && blockedUntil.getTime() > Date.now()) {
-      throw new BadRequestException('Temporarily blocked due to failed payments');
+      throw new BadRequestException(
+        'Temporarily blocked due to failed payments',
+      );
     }
 
     const already =
@@ -741,20 +788,25 @@ export class PaymentsService {
         userCountry: digikuntzInput!.userCountry,
         senderName: digikuntzInput!.senderName,
       });
+      const payinData =
+        payin?.data && typeof payin.data === 'object' ? payin.data : {};
 
       const providerTransactionId = this.firstNonEmpty(
         payin?.id,
+        payinData?.id,
         payin?.transactionId,
         payin?.providerTransactionId,
       );
       const providerRef = this.firstNonEmpty(
         payin?.transactionRef,
+        payinData?.transactionRef,
         payin?.providerRef,
         payin?.reference,
         payin?.ref,
       );
       const paymentLink = this.firstNonEmpty(
         payin?.paymentLink,
+        payinData?.paymentLink,
         payin?.payment_url,
         payin?.url,
         payin?.link,
@@ -766,6 +818,7 @@ export class PaymentsService {
       );
       const paymentWithTaxes = Number(
         payin?.paymentWithTaxes ??
+          payinData?.paymentWithTaxes ??
           payin?.amountWithTaxes ??
           payin?.amount_with_taxes ??
           0,
@@ -901,7 +954,10 @@ export class PaymentsService {
 
     const [allTx, monthTx, ledgerRows, monthLedgerRows] = await Promise.all([
       this.txModel.find().lean().exec(),
-      this.txModel.find({ createdAt: { $gte: monthStart } }).lean().exec(),
+      this.txModel
+        .find({ createdAt: { $gte: monthStart } })
+        .lean()
+        .exec(),
       this.ledgerModel
         .find({
           entryType: 'CASH_IN',
@@ -933,11 +989,16 @@ export class PaymentsService {
     const providerSource = ledgerRows.length > 0 ? ledgerRows : successTxXaf;
     for (const row of providerSource) {
       const provider = String((row as any).provider ?? 'UNKNOWN').toUpperCase();
-      byProvider[provider] = (byProvider[provider] ?? 0) + Number((row as any).amount ?? 0);
+      byProvider[provider] =
+        (byProvider[provider] ?? 0) + Number((row as any).amount ?? 0);
     }
 
-    const pendingCount = allTx.filter((tx: any) => tx.status === 'PENDING').length;
-    const failedCount = allTx.filter((tx: any) => tx.status === 'FAILED').length;
+    const pendingCount = allTx.filter(
+      (tx: any) => tx.status === 'PENDING',
+    ).length;
+    const failedCount = allTx.filter(
+      (tx: any) => tx.status === 'FAILED',
+    ).length;
     const pendingPayoutsXaf = allTx
       .filter(
         (tx: any) =>
@@ -957,12 +1018,24 @@ export class PaymentsService {
       currency: 'XAF',
       totalCashInXaf:
         ledgerRows.length > 0
-          ? ledgerRows.reduce((sum: number, row: any) => sum + Number(row.amount ?? 0), 0)
-          : successTxXaf.reduce((sum: number, tx: any) => sum + Number(tx.amount ?? 0), 0),
+          ? ledgerRows.reduce(
+              (sum: number, row: any) => sum + Number(row.amount ?? 0),
+              0,
+            )
+          : successTxXaf.reduce(
+              (sum: number, tx: any) => sum + Number(tx.amount ?? 0),
+              0,
+            ),
       monthCashInXaf:
         monthLedgerRows.length > 0
-          ? monthLedgerRows.reduce((sum: number, row: any) => sum + Number(row.amount ?? 0), 0)
-          : monthlySuccessXaf.reduce((sum: number, tx: any) => sum + Number(tx.amount ?? 0), 0),
+          ? monthLedgerRows.reduce(
+              (sum: number, row: any) => sum + Number(row.amount ?? 0),
+              0,
+            )
+          : monthlySuccessXaf.reduce(
+              (sum: number, tx: any) => sum + Number(tx.amount ?? 0),
+              0,
+            ),
       successCount,
       pendingCount,
       failedCount,
@@ -984,138 +1057,144 @@ export class PaymentsService {
       params?.dateTo,
     );
 
-    const [currentKpis, previousKpis, seriesRows, providerRows, topRafflesRaw, recent] =
-      await Promise.all([
-        this.aggregateDashboardKpis(range.from, range.to),
-        this.aggregateDashboardKpis(range.previousFrom, range.previousTo),
-        this.txModel
-          .aggregate([
-            { $match: { createdAt: { $gte: range.from, $lte: range.to } } },
-            {
-              $group: {
-                _id: {
-                  $dateToString: {
-                    format: range.bucketFormat,
-                    date: '$createdAt',
-                    timezone: this.analyticsTimezone,
-                  },
-                },
-                transactions: { $sum: 1 },
-                successTransactions: {
-                  $sum: { $cond: [{ $eq: ['$status', 'SUCCESS'] }, 1, 0] },
-                },
-                ticketsSold: {
-                  $sum: {
-                    $cond: [{ $eq: ['$status', 'SUCCESS'] }, '$quantity', 0],
-                  },
-                },
-                cashIn: {
-                  $sum: {
-                    $cond: [this.xafCondition('SUCCESS'), '$amount', 0],
-                  },
-                },
-                refunded: {
-                  $sum: {
-                    $cond: [this.xafCondition('REFUNDED'), '$amount', 0],
-                  },
+    const [
+      currentKpis,
+      previousKpis,
+      seriesRows,
+      providerRows,
+      topRafflesRaw,
+      recent,
+    ] = await Promise.all([
+      this.aggregateDashboardKpis(range.from, range.to),
+      this.aggregateDashboardKpis(range.previousFrom, range.previousTo),
+      this.txModel
+        .aggregate([
+          { $match: { createdAt: { $gte: range.from, $lte: range.to } } },
+          {
+            $group: {
+              _id: {
+                $dateToString: {
+                  format: range.bucketFormat,
+                  date: '$createdAt',
+                  timezone: this.analyticsTimezone,
                 },
               },
-            },
-            { $sort: { _id: 1 } },
-          ])
-          .exec(),
-        this.txModel
-          .aggregate([
-            {
-              $match: {
-                createdAt: { $gte: range.from, $lte: range.to },
-                status: 'SUCCESS',
+              transactions: { $sum: 1 },
+              successTransactions: {
+                $sum: { $cond: [{ $eq: ['$status', 'SUCCESS'] }, 1, 0] },
               },
-            },
-            {
-              $match: {
-                $expr: {
-                  $in: [
-                    { $toUpper: { $ifNull: ['$currency', 'XAF'] } },
-                    ['XAF', 'XOF'],
-                  ],
+              ticketsSold: {
+                $sum: {
+                  $cond: [{ $eq: ['$status', 'SUCCESS'] }, '$quantity', 0],
+                },
+              },
+              cashIn: {
+                $sum: {
+                  $cond: [this.xafCondition('SUCCESS'), '$amount', 0],
+                },
+              },
+              refunded: {
+                $sum: {
+                  $cond: [this.xafCondition('REFUNDED'), '$amount', 0],
                 },
               },
             },
-            {
-              $group: {
-                _id: { $toUpper: { $ifNull: ['$provider', 'UNKNOWN'] } },
-                cashIn: { $sum: '$amount' },
-                ticketsSold: { $sum: '$quantity' },
-                transactions: { $sum: 1 },
+          },
+          { $sort: { _id: 1 } },
+        ])
+        .exec(),
+      this.txModel
+        .aggregate([
+          {
+            $match: {
+              createdAt: { $gte: range.from, $lte: range.to },
+              status: 'SUCCESS',
+            },
+          },
+          {
+            $match: {
+              $expr: {
+                $in: [
+                  { $toUpper: { $ifNull: ['$currency', 'XAF'] } },
+                  ['XAF', 'XOF'],
+                ],
               },
             },
-            { $sort: { cashIn: -1 } },
-          ])
-          .exec(),
-        this.txModel
-          .aggregate([
-            {
-              $match: {
-                createdAt: { $gte: range.from, $lte: range.to },
-                status: 'SUCCESS',
-              },
+          },
+          {
+            $group: {
+              _id: { $toUpper: { $ifNull: ['$provider', 'UNKNOWN'] } },
+              cashIn: { $sum: '$amount' },
+              ticketsSold: { $sum: '$quantity' },
+              transactions: { $sum: 1 },
             },
-            {
-              $lookup: {
-                from: 'raffles',
-                localField: 'raffleId',
-                foreignField: '_id',
-                as: 'raffle',
-              },
+          },
+          { $sort: { cashIn: -1 } },
+        ])
+        .exec(),
+      this.txModel
+        .aggregate([
+          {
+            $match: {
+              createdAt: { $gte: range.from, $lte: range.to },
+              status: 'SUCCESS',
             },
-            { $unwind: { path: '$raffle', preserveNullAndEmptyArrays: true } },
-            {
-              $lookup: {
-                from: 'products',
-                localField: 'raffle.productId',
-                foreignField: '_id',
-                as: 'product',
-              },
+          },
+          {
+            $lookup: {
+              from: 'raffles',
+              localField: 'raffleId',
+              foreignField: '_id',
+              as: 'raffle',
             },
-            { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
-            {
-              $group: {
-                _id: '$raffleId',
-                title: { $first: '$product.title' },
-                status: { $first: '$raffle.status' },
-                ticketsSold: { $sum: '$quantity' },
-                cashIn: {
-                  $sum: {
-                    $cond: [this.xafCondition('SUCCESS'), '$amount', 0],
-                  },
+          },
+          { $unwind: { path: '$raffle', preserveNullAndEmptyArrays: true } },
+          {
+            $lookup: {
+              from: 'products',
+              localField: 'raffle.productId',
+              foreignField: '_id',
+              as: 'product',
+            },
+          },
+          { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+          {
+            $group: {
+              _id: '$raffleId',
+              title: { $first: '$product.title' },
+              status: { $first: '$raffle.status' },
+              ticketsSold: { $sum: '$quantity' },
+              cashIn: {
+                $sum: {
+                  $cond: [this.xafCondition('SUCCESS'), '$amount', 0],
                 },
-                participantsSet: { $addToSet: '$userId' },
               },
+              participantsSet: { $addToSet: '$userId' },
             },
-            {
-              $project: {
-                _id: 0,
-                raffleId: { $toString: '$_id' },
-                title: { $ifNull: ['$title', 'Raffle'] },
-                status: { $ifNull: ['$status', 'UNKNOWN'] },
-                ticketsSold: 1,
-                cashIn: 1,
-                participants: { $size: '$participantsSet' },
-              },
+          },
+          {
+            $project: {
+              _id: 0,
+              raffleId: { $toString: '$_id' },
+              title: { $ifNull: ['$title', 'Raffle'] },
+              status: { $ifNull: ['$status', 'UNKNOWN'] },
+              ticketsSold: 1,
+              cashIn: 1,
+              participants: { $size: '$participantsSet' },
             },
-            { $sort: { cashIn: -1, ticketsSold: -1 } },
-            { $limit: 6 },
-          ])
-          .exec(),
-        this.adminTransactions({
-          page: 1,
-          limit: 6,
-          status: 'ALL',
-          dateFrom: range.from.toISOString(),
-          dateTo: range.to.toISOString(),
-        }),
-      ]);
+          },
+          { $sort: { cashIn: -1, ticketsSold: -1 } },
+          { $limit: 6 },
+        ])
+        .exec(),
+      this.adminTransactions({
+        page: 1,
+        limit: 6,
+        status: 'ALL',
+        dateFrom: range.from.toISOString(),
+        dateTo: range.to.toISOString(),
+      }),
+    ]);
 
     const seriesMap = new Map<string, any>(
       (seriesRows ?? []).map((row: any) => [String(row?._id ?? ''), row]),
@@ -1172,7 +1251,10 @@ export class PaymentsService {
           previousKpis.ticketsSold,
         ),
         cashIn: currentKpis.cashIn,
-        cashInDeltaPct: this.deltaPercent(currentKpis.cashIn, previousKpis.cashIn),
+        cashInDeltaPct: this.deltaPercent(
+          currentKpis.cashIn,
+          previousKpis.cashIn,
+        ),
         netCashIn: currentKpis.netCashIn,
         netCashInDeltaPct: this.deltaPercent(
           currentKpis.netCashIn,
@@ -1235,11 +1317,7 @@ export class PaymentsService {
     }
 
     const [txRows, ledgerRows] = await Promise.all([
-      this.txModel
-        .find(txMatch)
-        .select('amount provider status')
-        .lean()
-        .exec(),
+      this.txModel.find(txMatch).select('amount provider status').lean().exec(),
       this.ledgerModel
         .find(ledgerMatch)
         .select('amount provider createdAt')
@@ -1264,7 +1342,12 @@ export class PaymentsService {
 
     const byProvider: Record<
       string,
-      { intentsXaf: number; confirmedXaf: number; pendingXaf: number; failedXaf: number }
+      {
+        intentsXaf: number;
+        confirmedXaf: number;
+        pendingXaf: number;
+        failedXaf: number;
+      }
     > = {};
 
     for (const tx of txRows) {
@@ -1285,7 +1368,9 @@ export class PaymentsService {
     }
 
     for (const entry of ledgerRows) {
-      const provider = String((entry as any).provider ?? 'UNKNOWN').toUpperCase();
+      const provider = String(
+        (entry as any).provider ?? 'UNKNOWN',
+      ).toUpperCase();
       byProvider[provider] = byProvider[provider] ?? {
         intentsXaf: 0,
         confirmedXaf: 0,
@@ -1322,10 +1407,15 @@ export class PaymentsService {
   }) {
     const page = Math.max(1, Number(params?.page ?? 1) || 1);
     const maxLimit = Math.max(1, Number(params?.maxLimit ?? 100) || 100);
-    const limit = Math.min(maxLimit, Math.max(1, Number(params?.limit ?? 20) || 20));
+    const limit = Math.min(
+      maxLimit,
+      Math.max(1, Number(params?.limit ?? 20) || 20),
+    );
     const skip = (page - 1) * limit;
     const status = String(params?.status ?? 'ALL').toUpperCase();
-    const provider = String(params?.provider ?? '').trim().toUpperCase();
+    const provider = String(params?.provider ?? '')
+      .trim()
+      .toUpperCase();
     const search = String(params?.search ?? '').trim();
     const dateFromRaw = String(params?.dateFrom ?? '').trim();
     const dateToRaw = String(params?.dateTo ?? '').trim();
@@ -1667,7 +1757,6 @@ export class PaymentsService {
     if (tx.provider !== 'DIGIKUNTZ')
       throw new BadRequestException('Not a DIGIKUNTZ transaction');
 
-    
     if (tx.status === 'SUCCESS') {
       return {
         ok: true,
@@ -1688,15 +1777,18 @@ export class PaymentsService {
     const remote = await this.digikuntz.getTransaction(
       tx.providerTransactionId,
     );
-    const remoteStatus = String(remote?.status ?? '').toLowerCase();
+    const remoteStatus = String(remote?.status ?? '')
+      .trim()
+      .toLowerCase();
+    const normalizedStatus = normalizeDigikuntzStatus(remoteStatus);
     tx.rawProviderStatus = remoteStatus;
 
-    if (remoteStatus === 'pending') {
+    if (normalizedStatus === 'pending') {
       await tx.save();
       return { ok: true, status: 'PENDING', remoteStatus };
     }
 
-    if (remoteStatus === 'success') {
+    if (normalizedStatus === 'success') {
       tx.status = 'SUCCESS';
       tx.confirmedAt = new Date();
       await tx.save();
@@ -1717,11 +1809,7 @@ export class PaymentsService {
       return { ok: true, status: 'SUCCESS', transactionId: tx._id.toString() };
     }
 
-    if (
-      remoteStatus === 'closed' ||
-      remoteStatus === 'error' ||
-      remoteStatus.includes('error')
-    ) {
+    if (normalizedStatus === 'failed') {
       tx.status = 'FAILED';
       await tx.save();
       await this.notifyPaymentFailed(
@@ -1737,11 +1825,16 @@ export class PaymentsService {
 
   async processDigikuntzWebhook(
     payload: {
+      id?: string;
       transactionId?: string;
       providerTransactionId?: string;
       providerRef?: string;
       status?: string;
       failReason?: string;
+      data?: {
+        transactionRef?: string;
+        [key: string]: unknown;
+      };
     },
     signature?: string,
     rawBody?: string,
@@ -1750,8 +1843,14 @@ export class PaymentsService {
     this.assertValidWebhookSignature(rawBody, signature, timestamp);
 
     const transactionId = String(payload?.transactionId ?? '').trim();
-    const providerTransactionId = String(payload?.providerTransactionId ?? '').trim();
-    const providerRef = String(payload?.providerRef ?? '').trim();
+    const providerTransactionId = this.firstNonEmpty(
+      payload?.providerTransactionId,
+      payload?.id,
+    );
+    let providerRef = this.firstNonEmpty(
+      payload?.providerRef,
+      payload?.data?.transactionRef,
+    );
 
     let tx: TransactionDocument | null = null;
     if (transactionId && Types.ObjectId.isValid(transactionId)) {
@@ -1763,17 +1862,42 @@ export class PaymentsService {
         .exec();
     }
     if (!tx && providerRef) {
-      tx = await this.txModel.findOne({ provider: 'DIGIKUNTZ', providerRef }).exec();
+      tx = await this.txModel
+        .findOne({ provider: 'DIGIKUNTZ', providerRef })
+        .exec();
     }
 
     if (!tx) {
       return { ok: true, ignored: true, reason: 'UNKNOWN_TRANSACTION' };
     }
 
-    const remoteStatus = String(payload?.status ?? '').trim().toLowerCase();
+    let remoteStatus = String(payload?.status ?? '')
+      .trim()
+      .toLowerCase();
+    if (getWebhookSignatureMode(this.config) === 'provider-verify') {
+      const remoteTransactionId = this.firstNonEmpty(
+        tx.providerTransactionId,
+        providerTransactionId,
+      );
+      if (!remoteTransactionId) {
+        throw new BadRequestException('Missing provider transaction id');
+      }
+
+      const remote = await this.digikuntz.getTransaction(remoteTransactionId);
+      remoteStatus = String(remote?.status ?? '')
+        .trim()
+        .toLowerCase();
+      providerRef = this.firstNonEmpty(
+        remote?.transactionRef,
+        remote?.data?.transactionRef,
+        providerRef,
+      );
+    }
+
     if (!remoteStatus) {
       throw new BadRequestException('Missing status');
     }
+    const normalizedStatus = normalizeDigikuntzStatus(remoteStatus);
 
     tx.rawProviderStatus = remoteStatus;
     if (providerRef && !tx.providerRef) {
@@ -1790,12 +1914,12 @@ export class PaymentsService {
       };
     }
 
-    if (remoteStatus === 'pending') {
+    if (normalizedStatus === 'pending') {
       await tx.save();
       return { ok: true, transactionId: tx._id.toString(), status: tx.status };
     }
 
-    if (remoteStatus === 'success' || remoteStatus === 'completed') {
+    if (normalizedStatus === 'success') {
       if (tx.status !== 'PENDING') {
         await tx.save();
         return {
@@ -1829,12 +1953,7 @@ export class PaymentsService {
       return { ok: true, transactionId: tx._id.toString(), status: tx.status };
     }
 
-    if (
-      remoteStatus === 'failed' ||
-      remoteStatus === 'closed' ||
-      remoteStatus === 'error' ||
-      remoteStatus.includes('error')
-    ) {
+    if (normalizedStatus === 'failed') {
       if (tx.status === 'FAILED') {
         await tx.save();
         return {
@@ -1845,7 +1964,9 @@ export class PaymentsService {
         };
       }
       tx.status = 'FAILED';
-      tx.failReason = String(payload?.failReason ?? `provider:${remoteStatus}`).trim();
+      tx.failReason = String(
+        payload?.failReason ?? `provider:${remoteStatus}`,
+      ).trim();
       tx.failedAt = new Date();
       await tx.save();
       await this.notifyPaymentFailed(tx, tx.failReason);
@@ -1861,10 +1982,14 @@ export class PaymentsService {
     signature: string | undefined,
     timestamp: string | undefined,
   ): void {
+    const signatureMode = getWebhookSignatureMode(this.config);
+    if (signatureMode === 'provider-verify') {
+      return;
+    }
+
     const secret = getRequiredSecret(this.config, 'DIGIKUNTZ_WEBHOOK_SECRET', {
       minLength: 24,
     });
-    const signatureMode = getWebhookSignatureMode(this.config);
 
     if (signatureMode === 'legacy-static') {
       if (!this.timingSafeEqual(secret, String(signature ?? '').trim())) {

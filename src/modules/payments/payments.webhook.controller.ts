@@ -1,10 +1,9 @@
 import { Body, Controller, Headers, Post, Req } from '@nestjs/common';
-import { ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { ApiTags } from '@nestjs/swagger';
 import { PaymentsService } from './payments.service';
 import { DigikuntzWebhookDto } from './dto/digikuntz-webhook.dto';
 
 @ApiTags('Payments Webhooks')
-@ApiSecurity('digikuntz-signature')
 @Controller('payments/digikuntz')
 export class PaymentsWebhookController {
   constructor(private readonly paymentsService: PaymentsService) {}

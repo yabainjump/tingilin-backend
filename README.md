@@ -62,9 +62,14 @@ copy .env.example .env
 | `MAIL_FROM` | Non | `Tingilin <no-reply@tingilin.local>` | Expediteur emails |
 | `SMTP_TLS_REJECT_UNAUTHORIZED` | Non | `true` | Validation TLS stricte |
 | `SMTP_TLS_SERVERNAME` | Non | vide | Nom TLS explicite si requis par le provider |
-| `DIGIKUNTZ_BASE_URL` | Oui (si provider DIGIKUNTZ) | - | API paiement Digikuntz |
-| `DIGIKUNTZ_USER_ID` | Oui (si provider DIGIKUNTZ) | - | Header auth Digikuntz |
-| `DIGIKUNTZ_SECRET_KEY` | Oui (si provider DIGIKUNTZ) | - | Header auth Digikuntz |
+| `DIGIKUNTZ_BASE_URL` | Oui (si provider DIGIKUNTZ) | `https://app.digikuntz.com/dev` | Base API officielle Digikuntz |
+| `DIGIKUNTZ_USER_ID` | Oui (si provider DIGIKUNTZ) | - | Identifiant du compte, header `x-user-id` |
+| `DIGIKUNTZ_SECRET_KEY` | Oui (si provider DIGIKUNTZ) | - | Clé API secrète, header `x-secret-key` |
+| `DIGIKUNTZ_CALLBACK_URL` | Oui (si provider DIGIKUNTZ) | - | Retour utilisateur après le checkout |
+| `DIGIKUNTZ_WEBHOOK_SIGNATURE_MODE` | Non | `provider-verify` | Revérifie chaque webhook auprès de Digikuntz |
+
+Dans l'espace développeur Digikuntz, configure l'URL webhook de production :
+`https://backend.tinguilin.yaba-in.com/api/v1/payments/digikuntz/webhook`.
 
 ## MongoDB local
 

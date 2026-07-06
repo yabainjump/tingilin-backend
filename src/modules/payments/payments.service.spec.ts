@@ -14,10 +14,13 @@ import { ConfigService } from '@nestjs/config';
 describe('PaymentsService', () => {
   let service: PaymentsService;
   let configService: { get: jest.Mock };
+  let txModelMock: Record<string, jest.Mock>;
+  let digikuntzMock: { getTransaction: jest.Mock };
 
   beforeEach(async () => {
-    const txModelMock = {
+    txModelMock = {
       findById: jest.fn(),
+      findOne: jest.fn(),
       create: jest.fn(),
       exists: jest.fn(),
       updateOne: jest.fn(),
@@ -38,6 +41,7 @@ describe('PaymentsService', () => {
         return values[key];
       }),
     };
+    digikuntzMock = { getTransaction: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -47,7 +51,7 @@ describe('PaymentsService', () => {
         { provide: RafflesService, useValue: {} },
         { provide: TicketsService, useValue: {} },
         { provide: ParticipationsService, useValue: {} },
-        { provide: DigikuntzPaymentsService, useValue: {} },
+        { provide: DigikuntzPaymentsService, useValue: digikuntzMock },
         { provide: NotificationsService, useValue: {} },
         { provide: UsersService, useValue: {} },
         { provide: ConfigService, useValue: configService },
@@ -73,5 +77,44 @@ describe('PaymentsService', () => {
     });
 
     expect(service.mockPaymentsEnabled()).toBe(false);
+  });
+
+  it('rechecks unsigned Digikuntz webhooks before trusting their status', async () => {
+    configService.get.mockImplementation((key: string, fallback?: string) => {
+      const values: Record<string, string> = {
+        NODE_ENV: 'production',
+        DIGIKUNTZ_WEBHOOK_SIGNATURE_MODE: 'provider-verify',
+      };
+      return values[key] ?? fallback;
+    });
+
+    const tx = {
+      _id: { toString: () => '665f1a2b3c4d5e6f7a8b9c0d' },
+      providerTransactionId: 'provider-id',
+      providerRef: undefined,
+      status: 'PENDING',
+      rawProviderStatus: '',
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    txModelMock.findOne.mockReturnValue({
+      exec: jest.fn().mockResolvedValue(tx),
+    });
+    digikuntzMock.getTransaction.mockResolvedValue({
+      id: 'provider-id',
+      status: 'payin_pending',
+      transactionRef: 'IN123#250101120000',
+    });
+
+    const result = await service.processDigikuntzWebhook({
+      id: 'provider-id',
+      status: 'payin_success',
+      data: { transactionRef: 'IN123#250101120000' },
+    });
+
+    expect(digikuntzMock.getTransaction).toHaveBeenCalledWith('provider-id');
+    expect(tx.rawProviderStatus).toBe('payin_pending');
+    expect(tx.status).toBe('PENDING');
+    expect(tx.save).toHaveBeenCalled();
+    expect(result).toMatchObject({ ok: true, status: 'PENDING' });
   });
 });
