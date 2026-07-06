@@ -110,6 +110,70 @@ describe('DigikuntzPaymentsService', () => {
     expect(result.status).toBe('payin_success');
   });
 
+  it('normalizes deeply nested transaction envelopes and aliases', async () => {
+    const { service, post } = createService();
+    post.mockReturnValue(
+      of({
+        data: {
+          status: 'success',
+          result: {
+            data: {
+              transaction: {
+                transaction_id: 'nested-provider-id',
+                transaction_ref: 'NESTED-REF',
+                payment_url: 'https://checkout.example.com/pay/nested',
+                payment_with_taxes: 110,
+                state: 'payin_pending',
+              },
+            },
+          },
+        },
+      } as AxiosResponse),
+    );
+
+    const result = await service.createPayin({
+      amount: 100,
+      reason: 'Test nested response',
+      userEmail: 'user@example.com',
+      userPhone: '691224472',
+      userCountry: 'Cameroon',
+      senderName: 'Test User',
+    });
+
+    expect(result).toMatchObject({
+      id: 'nested-provider-id',
+      transactionRef: 'NESTED-REF',
+      paymentLink: 'https://checkout.example.com/pay/nested',
+      paymentWithTaxes: '110',
+      status: 'payin_pending',
+    });
+  });
+
+  it('rejects a non-HTTP payment link returned by the provider', async () => {
+    const { service, post } = createService();
+    post.mockReturnValue(
+      of({
+        data: {
+          data: {
+            id: 'provider-id',
+            paymentLink: 'javascript:alert(1)',
+          },
+        },
+      } as AxiosResponse),
+    );
+
+    const result = await service.createPayin({
+      amount: 100,
+      reason: 'Test unsafe link',
+      userEmail: 'user@example.com',
+      userPhone: '691224472',
+      userCountry: 'Cameroon',
+      senderName: 'Test User',
+    });
+
+    expect(result.paymentLink).toBeUndefined();
+  });
+
   it('fails clearly when callbackUrl is not configured', async () => {
     const { service } = createService({ DIGIKUNTZ_CALLBACK_URL: '' });
 

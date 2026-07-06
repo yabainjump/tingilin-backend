@@ -68,6 +68,10 @@ copy .env.example .env
 | `DIGIKUNTZ_CALLBACK_URL` | Oui (si provider DIGIKUNTZ) | - | Retour utilisateur après le checkout |
 | `DIGIKUNTZ_WEBHOOK_SIGNATURE_MODE` | Non | `provider-verify` | Revérifie chaque webhook auprès de Digikuntz |
 
+Documentation officielle vérifiée : https://payments.digikuntz.com/api-doc.
+Le portail et la documentation sont servis par `payments.digikuntz.com`, tandis
+que l'API appelée par les routes `/dev/*` est servie par `app.digikuntz.com`.
+
 Dans l'espace développeur Digikuntz, configure l'URL webhook de production :
 `https://backend.tinguilin.yaba-in.com/api/v1/payments/digikuntz/webhook`.
 

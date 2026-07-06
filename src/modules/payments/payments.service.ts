@@ -840,9 +840,17 @@ export class PaymentsService {
           0,
       );
 
-      if (!providerTransactionId && !providerRef && !paymentLink) {
+      if (!paymentLink) {
+        const providerMessage = this.firstNonEmpty(
+          payin?.message,
+          payin?.detail,
+          payin?.reason,
+          payin?.error,
+        )
+          .replace(/[\r\n\t]+/g, ' ')
+          .slice(0, 180);
         throw new BadGatewayException(
-          'Digikuntz createPayin returned an invalid response payload',
+          `Digikuntz createPayin did not return a valid payment link${providerMessage ? `: ${providerMessage}` : ''}`,
         );
       }
 

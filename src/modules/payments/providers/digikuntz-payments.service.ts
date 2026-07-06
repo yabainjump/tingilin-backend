@@ -4,6 +4,7 @@ import {
   HttpException,
   Inject,
   Injectable,
+  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
@@ -56,6 +57,7 @@ export function normalizeDigikuntzStatus(
 
 @Injectable()
 export class DigikuntzPaymentsService {
+  private readonly logger = new Logger(DigikuntzPaymentsService.name);
   private readonly baseUrl: string;
   private readonly userId: string;
   private readonly secretKey: string;
@@ -150,6 +152,76 @@ export class DigikuntzPaymentsService {
     return '';
   }
 
+  private transactionRecords(payload: unknown): Record<string, unknown>[] {
+    const root = this.asRecord(payload);
+    if (Object.keys(root).length === 0) return [];
+
+    const records: Record<string, unknown>[] = [];
+    const queue: Array<{ value: Record<string, unknown>; depth: number }> = [
+      { value: root, depth: 0 },
+    ];
+    const visited = new Set<Record<string, unknown>>();
+    const envelopeKeys = [
+      'data',
+      'result',
+      'transaction',
+      'payment',
+      'payin',
+      'response',
+    ];
+
+    while (queue.length > 0 && records.length < 12) {
+      const current = queue.shift()!;
+      if (visited.has(current.value)) continue;
+      visited.add(current.value);
+      records.push(current.value);
+      if (current.depth >= 5) continue;
+
+      for (const key of envelopeKeys) {
+        const nested = this.asRecord(current.value[key]);
+        if (Object.keys(nested).length > 0) {
+          queue.push({ value: nested, depth: current.depth + 1 });
+        }
+      }
+    }
+
+    return records;
+  }
+
+  private firstRecordValue(
+    records: Record<string, unknown>[],
+    keys: string[],
+  ): string {
+    for (const record of [...records].reverse()) {
+      for (const key of keys) {
+        const value = this.asString(record[key]);
+        if (value) return value;
+      }
+    }
+    return '';
+  }
+
+  private httpUrl(value: string): string {
+    if (!value) return '';
+    try {
+      const parsed = new URL(value);
+      return ['http:', 'https:'].includes(parsed.protocol)
+        ? parsed.toString()
+        : '';
+    } catch {
+      return '';
+    }
+  }
+
+  private payloadShape(records: Record<string, unknown>[]): string {
+    return records
+      .map(
+        (record, index) => `${index}:${Object.keys(record).sort().join(',')}`,
+      )
+      .join(' | ')
+      .slice(0, 800);
+  }
+
   private providerErrorMessage(data: unknown): string {
     const payload = this.asRecord(data);
     const direct = this.asString(
@@ -209,15 +281,52 @@ export class DigikuntzPaymentsService {
   private normalizeTransactionResponse(
     payload: unknown,
   ): DigikuntzTransactionResponse {
-    const root = this.asRecord(payload);
-    const details = this.asRecord(root.data);
+    const records = this.transactionRecords(payload);
+    const root = records[0] ?? {};
+    const flattened = Object.assign({}, ...records);
+    const id = this.firstRecordValue(records, [
+      'id',
+      '_id',
+      'transactionId',
+      'transaction_id',
+      'providerTransactionId',
+    ]);
+    const status = this.firstRecordValue(records, ['status', 'state']);
+    const transactionRef = this.firstRecordValue(records, [
+      'transactionRef',
+      'transaction_ref',
+      'reference',
+      'ref',
+      'providerRef',
+    ]);
+    const paymentLink = this.httpUrl(
+      this.firstRecordValue(records, [
+        'paymentLink',
+        'payment_link',
+        'paymentUrl',
+        'payment_url',
+        'checkoutUrl',
+        'checkout_url',
+        'link',
+        'url',
+      ]),
+    );
+    const paymentWithTaxes = this.firstRecordValue(records, [
+      'paymentWithTaxes',
+      'payment_with_taxes',
+      'amountWithTaxes',
+      'amount_with_taxes',
+    ]);
 
     return {
       ...root,
-      ...details,
-      id: this.asString(root.id ?? details.id) || undefined,
-      status: this.asString(root.status ?? details.status) || undefined,
-      data: details,
+      ...flattened,
+      id: id || undefined,
+      status: status || undefined,
+      transactionRef: transactionRef || undefined,
+      paymentLink: paymentLink || undefined,
+      paymentWithTaxes: paymentWithTaxes || undefined,
+      data: flattened,
     };
   }
 
@@ -246,7 +355,18 @@ export class DigikuntzPaymentsService {
       const res = await firstValueFrom(
         this.http.post(url, body, { headers: this.headers() }),
       );
-      return this.normalizeTransactionResponse(res.data);
+      const normalized = this.normalizeTransactionResponse(res.data);
+      if (
+        !normalized.id &&
+        !normalized.transactionRef &&
+        !normalized.paymentLink
+      ) {
+        const records = this.transactionRecords(res.data);
+        this.logger.warn(
+          `Digikuntz createPayin response has no transaction fields; shape=${this.payloadShape(records) || 'empty'}`,
+        );
+      }
+      return normalized;
     } catch (e: unknown) {
       this.throwUpstreamError('createPayin', e);
     }
