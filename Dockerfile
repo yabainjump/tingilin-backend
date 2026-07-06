@@ -31,4 +31,4 @@ RUN mkdir -p uploads
 
 EXPOSE 3000
 
-CMD ["node", "app.js"]
+CMD ["sh", "-c", "node dist/scripts/migrate-payment-indexes.js && node app.js"]

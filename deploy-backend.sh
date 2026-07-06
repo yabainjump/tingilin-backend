@@ -65,6 +65,7 @@ if [ -f package-lock.json ]; then "$NPM" ci --no-audit --no-fund; else "$NPM" in
 # ("Process not found"). Downtime ~1-2s, acceptable pour 1 instance.
 echo "==> PM2 (re)demarrage"
 $PM2 delete "$PM2_APP_NAME" >/dev/null 2>&1 || true
+"$NODE_BIN/node" dist/scripts/migrate-payment-indexes.js
 $PM2 start deploy/pm2/ecosystem.config.cjs --env production
 $PM2 save   # persiste la liste des process (pour 'pm2 resurrect' au reboot)
 

@@ -58,10 +58,22 @@ export class Transaction {
 export const TransactionSchema = SchemaFactory.createForClass(Transaction);
 TransactionSchema.index(
   { provider: 1, providerTransactionId: 1 },
-  { unique: true, sparse: true },
+  {
+    unique: true,
+    partialFilterExpression: { providerTransactionId: { $type: 'string' } },
+  },
 );
-TransactionSchema.index({ provider: 1, providerRef: 1 }, { unique: true, sparse: true });
+TransactionSchema.index(
+  { provider: 1, providerRef: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { providerRef: { $type: 'string' } },
+  },
+);
 TransactionSchema.index(
   { userId: 1, idempotencyKey: 1 },
-  { unique: true, sparse: true },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: 'string' } },
+  },
 );
