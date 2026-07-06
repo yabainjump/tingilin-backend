@@ -100,7 +100,7 @@ export class DigikuntzPaymentsService {
   }
 
   assertConfigured(): void {
-    this.requiredEnv('DIGIKUNTZ_BASE_URL');
+    const baseUrl = this.requiredEnv('DIGIKUNTZ_BASE_URL');
     this.requiredEnv('DIGIKUNTZ_USER_ID');
     this.requiredEnv('DIGIKUNTZ_SECRET_KEY');
     const callbackUrl = this.requiredEnv('DIGIKUNTZ_CALLBACK_URL');
@@ -116,6 +116,25 @@ export class DigikuntzPaymentsService {
     if (!['http:', 'https:'].includes(parsed.protocol)) {
       throw new ServiceUnavailableException(
         'Invalid payment config: DIGIKUNTZ_CALLBACK_URL must use HTTP(S)',
+      );
+    }
+
+    let parsedBaseUrl: URL;
+    try {
+      parsedBaseUrl = new URL(baseUrl);
+    } catch {
+      throw new ServiceUnavailableException(
+        'Invalid payment config: DIGIKUNTZ_BASE_URL must be an absolute URL',
+      );
+    }
+    if (!['http:', 'https:'].includes(parsedBaseUrl.protocol)) {
+      throw new ServiceUnavailableException(
+        'Invalid payment config: DIGIKUNTZ_BASE_URL must use HTTP(S)',
+      );
+    }
+    if (parsedBaseUrl.hostname.toLowerCase() === 'payments.digikuntz.com') {
+      throw new ServiceUnavailableException(
+        'Invalid payment config: payments.digikuntz.com is the web portal; use https://app.digikuntz.com/dev',
       );
     }
   }
@@ -355,6 +374,20 @@ export class DigikuntzPaymentsService {
       const res = await firstValueFrom(
         this.http.post(url, body, { headers: this.headers() }),
       );
+      const contentType = String(res.headers?.['content-type'] ?? '')
+        .trim()
+        .toLowerCase();
+      if (
+        typeof res.data === 'string' &&
+        !contentType.includes('application/json')
+      ) {
+        this.logger.warn(
+          `Digikuntz createPayin returned non-JSON content; contentType=${contentType || 'unknown'}`,
+        );
+        throw new BadGatewayException(
+          'Digikuntz returned a non-JSON response; verify DIGIKUNTZ_BASE_URL=https://app.digikuntz.com/dev',
+        );
+      }
       const normalized = this.normalizeTransactionResponse(res.data);
       if (
         !normalized.id &&

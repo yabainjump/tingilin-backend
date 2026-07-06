@@ -229,6 +229,37 @@ describe('DigikuntzPaymentsService', () => {
     expect(post).not.toHaveBeenCalled();
   });
 
+  it('rejects the Digikuntz web portal as API base URL', () => {
+    const { service } = createService({
+      DIGIKUNTZ_BASE_URL: 'https://payments.digikuntz.com/dev',
+    });
+
+    expect(() => service.assertConfigured()).toThrow(
+      'payments.digikuntz.com is the web portal',
+    );
+  });
+
+  it('rejects an HTML response returned instead of the payment API JSON', async () => {
+    const { service, post } = createService();
+    post.mockReturnValue(
+      of({
+        data: '<!doctype html><html></html>',
+        headers: { 'content-type': 'text/html' },
+      } as AxiosResponse),
+    );
+
+    await expect(
+      service.createPayin({
+        amount: 100,
+        reason: 'Test HTML response',
+        userEmail: 'user@example.com',
+        userPhone: '691224472',
+        userCountry: 'Cameroon',
+        senderName: 'Test User',
+      }),
+    ).rejects.toThrow('Digikuntz returned a non-JSON response');
+  });
+
   it.each([
     ['payin_pending', 'pending'],
     ['transaction_payin_success', 'success'],
