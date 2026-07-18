@@ -93,8 +93,11 @@ if (customDnsServers.length > 0) {
               mongoLogger.warn('MongoDB disconnected');
             });
             connection.on('error', (error: unknown) => {
-              const message =
-                error instanceof Error ? error.message : String(error ?? 'Unknown MongoDB error');
+              const message = error instanceof Error
+                ? error.message
+                : typeof error === 'string'
+                  ? error
+                  : 'Unknown MongoDB error';
               mongoLogger.error(message);
             });
             return connection;

@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { ClientSession, Model, Types } from 'mongoose';
 
 import {
   RewardHistorySource,
@@ -736,7 +736,11 @@ export class UsersService {
     };
   }
 
-  async consumeFreeTickets(userId: string, count = 1) {
+  async consumeFreeTickets(
+    userId: string,
+    count = 1,
+    session?: ClientSession,
+  ) {
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException('Invalid user id');
     }
@@ -749,7 +753,7 @@ export class UsersService {
           freeTicketsBalance: { $gte: qty },
         },
         { $inc: { freeTicketsBalance: -qty } },
-        { new: true },
+        { new: true, session },
       )
       .exec();
 

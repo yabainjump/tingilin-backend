@@ -24,12 +24,15 @@ export class RafflesScheduler {
   }
 
   private isTransientMongoError(error: unknown): boolean {
-    const name =
-      error && typeof error === 'object' && 'name' in error ? String((error as any).name ?? '') : '';
-    const message =
-      error && typeof error === 'object' && 'message' in error
-        ? String((error as any).message ?? '')
-        : String(error ?? '');
+    const candidate = error && typeof error === 'object'
+      ? (error as Record<string, unknown>)
+      : {};
+    const name = typeof candidate.name === 'string' ? candidate.name : '';
+    const message = error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : '';
 
     return (
       /MongoServerSelectionError|MongoNetworkError/i.test(name) ||
@@ -41,7 +44,7 @@ export class RafflesScheduler {
   async tick() {
     if (!this.schedulerEnabled()) return;
     if (this.running) return;
-    if (this.mongoConnection.readyState !== 1) {
+    if (Number(this.mongoConnection.readyState) !== 1) {
       this.logger.warn(
         `Skipping scheduler tick because Mongo is not ready (state ${this.mongoConnection.readyState}).`,
       );

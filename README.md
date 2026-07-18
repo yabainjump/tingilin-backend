@@ -39,7 +39,7 @@ copy .env.example .env
 | Variable | Requis | Defaut code | Usage |
 |---|---|---|---|
 | `APP_PORT` | Non | `3000` | Port HTTP API |
-| `MONGO_URI` | Oui | - | Connexion MongoDB |
+| `MONGO_URI` | Oui | - | Connexion MongoDB vers un replica set (requis pour les transactions de paiement) |
 | `APP_NAME` | Non | `Tingilin` | Nom app (emails) |
 | `APP_WEB_URL` | Non | `http://localhost:8100` | Lien referral genere |
 | `PUBLIC_APP_URL` | Non | `http://localhost:8100` | Redirection share page |
@@ -83,7 +83,10 @@ Le repo contient `docker-compose.yml` pour MongoDB.
 docker compose up -d
 ```
 
-Mongo expose sur `mongodb://localhost:27017`.
+Mongo expose un replica set local sur
+`mongodb://localhost:27017/tingilin?replicaSet=rs0`. Les paiements et tickets
+gratuits refusent volontairement un MongoDB standalone, car leur finalisation
+doit être atomique. Atlas fournit nativement cette capacité en production.
 
 ## Lancer l'API
 

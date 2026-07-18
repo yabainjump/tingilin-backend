@@ -1,6 +1,9 @@
 import 'dotenv/config';
 import mongoose from 'mongoose';
-import { ensurePaymentIndexes } from '../modules/payments/payment-indexes';
+import {
+  ensurePaymentIndexes,
+  ensureTicketFulfillmentIndex,
+} from '../modules/payments/payment-indexes';
 
 const COLLECTION_NAME = 'transactions';
 
@@ -11,6 +14,10 @@ async function migratePaymentIndexes() {
   await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 15_000 });
   const collection = mongoose.connection.collection(COLLECTION_NAME);
   await ensurePaymentIndexes(collection, console.log);
+  await ensureTicketFulfillmentIndex(
+    mongoose.connection.collection('tickets'),
+    console.log,
+  );
 }
 
 migratePaymentIndexes()

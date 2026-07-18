@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { BadRequestException } from '@nestjs/common';
+import { ClientSession, Model, Types } from 'mongoose';
 import {
   Participation,
   ParticipationDocument,
@@ -17,9 +18,20 @@ export class ParticipationsService {
     raffleId: string;
     userId: string;
     quantity: number;
-  }) {
+  }, session?: ClientSession) {
     const raffleObj = new Types.ObjectId(params.raffleId);
     const userObj = new Types.ObjectId(params.userId);
+
+    const current = await this.model
+      .findOne({ raffleId: raffleObj, userId: userObj })
+      .session(session ?? null)
+      .exec();
+    const already = Number(current?.totalTicketsBought ?? 0);
+    if (already + params.quantity > 200) {
+      throw new BadRequestException(
+        'Ticket limit reached for this raffle (max 200)',
+      );
+    }
 
     const res = await this.model
       .updateOne(
@@ -28,7 +40,7 @@ export class ParticipationsService {
           $setOnInsert: { firstPurchaseAt: new Date() },
           $inc: { totalTicketsBought: params.quantity },
         },
-        { upsert: true },
+        { upsert: true, session },
       )
       .exec();
 

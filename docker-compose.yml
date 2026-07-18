@@ -4,9 +4,15 @@ services:
     container_name: tingilin-mongo
     ports:
       - "27017:27017"
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - tingilin_mongo_data:/data/db
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'try { rs.status().ok } catch (e) { rs.initiate({_id:\"rs0\",members:[{_id:0,host:\"localhost:27017\"}]}).ok }' | grep 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
 
 volumes:
   tingilin_mongo_data:

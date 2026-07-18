@@ -42,7 +42,6 @@ describe('provably-fair', () => {
   });
 
   it('changes the winner if the ticket set changes (binding)', () => {
-    const serverSeed = 'b'.repeat(64);
     const hash1 = computeTicketsetHash(serials);
     const hash2 = computeTicketsetHash([...serials, 'TGL-AAAAAA-0004']);
     expect(hash1).not.toBe(hash2);

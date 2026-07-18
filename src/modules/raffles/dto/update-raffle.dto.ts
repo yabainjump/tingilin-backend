@@ -1,10 +1,12 @@
 import {
   IsDateString,
+  IsEnum,
   IsNumber,
   IsOptional,
   IsString,
   Min,
 } from 'class-validator';
+import { RaffleStatus } from '../schemas/raffle.schema';
 
 export class UpdateRaffleDto {
   @IsOptional()
@@ -29,6 +31,6 @@ export class UpdateRaffleDto {
   rules?: string;
 
   @IsOptional()
-  @IsString()
-  status?: 'DRAFT' | 'LIVE' | 'CLOSED' | 'DRAWN';
+  @IsEnum(RaffleStatus)
+  status?: RaffleStatus;
 }

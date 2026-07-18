@@ -18,6 +18,9 @@ export class Ticket {
   @Prop({ type: Types.ObjectId, required: true, index: true })
   transactionId: Types.ObjectId;
 
+  @Prop({ type: Number, required: true, min: 0 })
+  sequence: number;
+
   @Prop({ required: true })
   serial: string;
 
@@ -28,3 +31,10 @@ export class Ticket {
 export const TicketSchema = SchemaFactory.createForClass(Ticket);
 TicketSchema.index({ raffleId: 1, serial: 1 }, { unique: true });
 TicketSchema.index({ raffleId: 1, userId: 1 });
+TicketSchema.index(
+  { transactionId: 1, sequence: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { sequence: { $type: 'number' } },
+  },
+);

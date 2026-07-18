@@ -88,7 +88,7 @@ describe('ShareController', () => {
 
     const html = String(res.send.mock.calls[0][0]);
     expect(html).toContain(
-      'http://localhost:8100/auth/register?ref=WIN-PWV95M&referralCode=WIN-PWV95M',
+      'http://localhost:8100/auth/register?ref=WIN-PWV95M&amp;referralCode=WIN-PWV95M',
     );
     expect(html).toContain('http://localhost:8100/assets/img/referal.jpg');
   });
@@ -111,7 +111,7 @@ describe('ShareController', () => {
 
     const html = String(res.send.mock.calls[0][0]);
     expect(html).toContain(
-      'https://tinguilin.yaba-in.com/auth/register?ref=WIN-PWV95M&referralCode=WIN-PWV95M',
+      'https://tinguilin.yaba-in.com/auth/register?ref=WIN-PWV95M&amp;referralCode=WIN-PWV95M',
     );
     expect(html).toContain(
       'https://tinguilin.yaba-in.com/assets/img/referal.jpg',
@@ -130,5 +130,20 @@ describe('ShareController', () => {
     expect(html).toContain('Tinguilin · Raffles premium en direct');
     expect(html).toContain('https://tinguilin.yaba-in.com/assets/img/Asset_6.png');
     expect(html).toContain('https://tinguilin.yaba-in.com/landing');
+  });
+
+  it('does not reflect executable markup from the site redirect path', () => {
+    process.env.PUBLIC_APP_URL = 'https://tinguilin.yaba-in.com';
+    const res = createResponseMock();
+
+    controller.shareSite('/landing?</script><script>alert(1)</script>', res as any);
+
+    const html = String(res.send.mock.calls[0][0]);
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('</script>');
+    expect(res.setHeader).toHaveBeenCalledWith(
+      'Content-Security-Policy',
+      expect.stringContaining("default-src 'none'"),
+    );
   });
 });

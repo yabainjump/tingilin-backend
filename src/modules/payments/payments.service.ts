@@ -6,8 +6,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import { ClientSession, Connection, Model, Types } from 'mongoose';
 import * as crypto from 'crypto';
 import { RafflesService } from '../raffles/raffles.service';
 import { TicketsService } from '../tickets/tickets.service';
@@ -71,6 +71,7 @@ export class PaymentsService {
     private readonly notifications: NotificationsService,
     private readonly usersService: UsersService,
     private readonly config: ConfigService,
+    @InjectConnection() private readonly connection: Connection,
   ) {}
 
   mockPaymentsEnabled(): boolean {
@@ -413,7 +414,7 @@ export class PaymentsService {
     });
   }
 
-  private assertRafflePurchasable(raffle: any) {
+  private assertRafflePurchasable(raffle: any, quantity = 1) {
     const now = Date.now();
     const startAt = raffle?.startAt ? new Date(raffle.startAt).getTime() : NaN;
     const endAt = raffle?.endAt ? new Date(raffle.endAt).getTime() : NaN;
@@ -430,7 +431,10 @@ export class PaymentsService {
 
     const totalTickets = Number(raffle?.totalTickets ?? 0);
     const soldTickets = Number(raffle?.ticketsSold ?? 0);
-    if (totalTickets > 0 && soldTickets >= totalTickets) {
+    if (
+      totalTickets > 0 &&
+      soldTickets + Math.max(1, Math.floor(Number(quantity) || 1)) > totalTickets
+    ) {
       throw new BadRequestException('No tickets left for this raffle');
     }
   }
@@ -487,6 +491,46 @@ export class PaymentsService {
     const txSuffix = tx._id.toString().slice(-8).toUpperCase();
     const quantity = Math.max(1, Number(tx.quantity ?? 1));
     return `Tingilin payment ${txSuffix} x${quantity}`;
+  }
+
+  private assertRemoteTransactionMatches(
+    tx: TransactionDocument,
+    remote: Record<string, any>,
+  ): void {
+    const data =
+      remote?.data && typeof remote.data === 'object' ? remote.data : {};
+    const remoteId = this.firstNonEmpty(
+      remote?.id,
+      data?.id,
+      remote?.transactionId,
+    );
+    const remoteRef = this.firstNonEmpty(
+      remote?.transactionRef,
+      data?.transactionRef,
+      remote?.providerRef,
+    );
+    const remoteAmount = Number(
+      remote?.estimation ?? data?.estimation ?? Number.NaN,
+    );
+    const remoteCurrency = this.firstNonEmpty(
+      remote?.receiverCurrency,
+      data?.receiverCurrency,
+      remote?.currency,
+      data?.currency,
+    ).toUpperCase();
+
+    if (!remoteId || remoteId !== String(tx.providerTransactionId ?? '')) {
+      throw new BadGatewayException('Digikuntz transaction id mismatch');
+    }
+    if (!remoteRef || (tx.providerRef && remoteRef !== tx.providerRef)) {
+      throw new BadGatewayException('Digikuntz transaction reference mismatch');
+    }
+    if (!Number.isFinite(remoteAmount) || remoteAmount !== Number(tx.amount)) {
+      throw new BadGatewayException('Digikuntz transaction amount mismatch');
+    }
+    if (!remoteCurrency || remoteCurrency !== String(tx.currency).toUpperCase()) {
+      throw new BadGatewayException('Digikuntz transaction currency mismatch');
+    }
   }
 
   private rethrowPersistenceError(error: any): never {
@@ -586,7 +630,10 @@ export class PaymentsService {
       .exec();
   }
 
-  private async appendLedgerCashIn(tx: TransactionDocument) {
+  private async appendLedgerCashIn(
+    tx: TransactionDocument,
+    session?: ClientSession,
+  ) {
     const amount = Number(tx.amount ?? 0);
     if (amount <= 0) return;
 
@@ -605,33 +652,71 @@ export class PaymentsService {
             providerRef: tx.providerRef ?? '',
           },
         },
-        { upsert: true },
+        { upsert: true, session },
       )
       .exec();
   }
 
-  private async finalizeSuccessfulTransaction(tx: TransactionDocument) {
-    await this.ticketsService.createMany({
-      raffleId: tx.raffleId.toString(),
-      userId: tx.userId.toString(),
-      transactionId: tx._id.toString(),
-      quantity: tx.quantity,
-    });
+  private async finalizeSuccessfulTransaction(transactionId: string) {
+    const session = await this.connection.startSession();
+    let finalized: TransactionDocument | null = null;
 
-    const part = await this.participationsService.upsertAfterPurchase({
-      raffleId: tx.raffleId.toString(),
-      userId: tx.userId.toString(),
-      quantity: tx.quantity,
-    });
+    try {
+      await session.withTransaction(async () => {
+        const tx = await this.txModel
+          .findById(transactionId)
+          .session(session)
+          .exec();
+        if (!tx) throw new NotFoundException('Transaction not found');
+        if (tx.status === 'SUCCESS') {
+          finalized = tx;
+          return;
+        }
+        if (tx.status !== 'PENDING') {
+          throw new BadRequestException('Transaction not pending');
+        }
 
-    await this.rafflesService.incrementStats(
-      tx.raffleId.toString(),
-      tx.quantity,
-      part.wasCreated ? 1 : 0,
+        const part = await this.participationsService.upsertAfterPurchase(
+          {
+            raffleId: tx.raffleId.toString(),
+            userId: tx.userId.toString(),
+            quantity: tx.quantity,
+          },
+          session,
+        );
+        await this.rafflesService.incrementStats(
+          tx.raffleId.toString(),
+          tx.quantity,
+          part.wasCreated ? 1 : 0,
+          session,
+        );
+        await this.ticketsService.createMany(
+          {
+            raffleId: tx.raffleId.toString(),
+            userId: tx.userId.toString(),
+            transactionId: tx._id.toString(),
+            quantity: tx.quantity,
+          },
+          session,
+        );
+        await this.appendLedgerCashIn(tx, session);
+
+        tx.status = 'SUCCESS';
+        tx.confirmedAt = new Date();
+        await tx.save({ session });
+        finalized = tx;
+      });
+    } finally {
+      await session.endSession();
+    }
+
+    if (!finalized) {
+      throw new BadGatewayException('Payment fulfillment did not complete');
+    }
+    await this.usersService.evaluateMilestones(
+      (finalized as TransactionDocument).userId.toString(),
     );
-
-    await this.usersService.evaluateMilestones(tx.userId.toString());
-    await this.appendLedgerCashIn(tx);
+    return finalized as TransactionDocument;
   }
 
   async createIntent(userId: string, dto: CreateIntentDto) {
@@ -651,6 +736,7 @@ export class PaymentsService {
       throw new BadRequestException(`Amount must be a multiple of ${unit}`);
     }
     const quantity = amount / unit;
+    this.assertRafflePurchasable(raffle, quantity);
     const requestedProvider =
       dto.provider ?? (this.mockPaymentsEnabled() ? 'MOCK' : 'DIGIKUNTZ');
     const provider = requestedProvider;
@@ -947,29 +1033,17 @@ export class PaymentsService {
     });
     if (refUsed) throw new BadRequestException('providerRef already used');
 
-    tx.status = 'SUCCESS';
     tx.providerRef = dto.providerRef;
-    tx.confirmedAt = new Date();
     await tx.save();
-
-    const partBefore = await this.participationsService.getOrCreate(
-      tx.raffleId.toString(),
-      userId,
+    const finalized = await this.finalizeSuccessfulTransaction(
+      tx._id.toString(),
     );
-    const already =
-      typeof partBefore.totalTicketsBought === 'number'
-        ? partBefore.totalTicketsBought
-        : 0;
 
-    const MAX = 200;
-    if (already + tx.quantity > MAX) {
-      throw new BadRequestException(
-        `Ticket limit reached for this raffle (max ${MAX})`,
-      );
-    }
-    await this.finalizeSuccessfulTransaction(tx);
-
-    return { ok: true, transactionId: tx._id.toString(), status: tx.status };
+    return {
+      ok: true,
+      transactionId: finalized._id.toString(),
+      status: finalized.status,
+    };
   }
 
   async adminSummary() {
@@ -1637,7 +1711,13 @@ export class PaymentsService {
   }
 
   private escapeCsvValue(value: unknown): string {
-    const raw = String(value ?? '');
+    let input = '';
+    if (typeof value === 'string') input = value;
+    else if (typeof value === 'number') input = value.toString();
+    else if (typeof value === 'boolean') input = value ? 'true' : 'false';
+    else if (typeof value === 'bigint') input = value.toString();
+    else if (value != null) input = JSON.stringify(value) ?? '';
+    const raw = /^[\s]*[=+\-@]/.test(input) ? `'${input}` : input;
     if (!/[",\n\r]/.test(raw)) {
       return raw;
     }
@@ -1647,43 +1727,61 @@ export class PaymentsService {
   async useFreeTicket(userId: string, dto: CreateFreeTicketDto) {
     const raffle = await this.rafflesService.adminGetById(dto.raffleId);
     this.assertRafflePurchasable(raffle);
+    const session = await this.connection.startSession();
+    const outcome: { tx?: TransactionDocument } = {};
+    try {
+      await session.withTransaction(async () => {
+        await this.usersService.consumeFreeTickets(userId, 1, session);
+        const created = await this.txModel.create(
+          [
+            {
+              userId: new Types.ObjectId(userId),
+              raffleId: new Types.ObjectId(dto.raffleId),
+              quantity: 1,
+              amount: 0,
+              currency: raffle.currency ?? 'XAF',
+              provider: 'FREE_TICKET',
+              status: 'PENDING',
+              providerRef: `FREE-${crypto.randomUUID()}`,
+            },
+          ],
+          { session },
+        );
+        const pendingTx = created[0];
+        outcome.tx = pendingTx;
+        const part = await this.participationsService.upsertAfterPurchase(
+          { raffleId: dto.raffleId, userId, quantity: 1 },
+          session,
+        );
+        await this.rafflesService.incrementStats(
+          dto.raffleId,
+          1,
+          part.wasCreated ? 1 : 0,
+          session,
+        );
+        await this.ticketsService.createMany(
+          {
+            raffleId: dto.raffleId,
+            userId,
+            transactionId: pendingTx._id.toString(),
+            quantity: 1,
+          },
+          session,
+        );
+        pendingTx.status = 'SUCCESS';
+        pendingTx.confirmedAt = new Date();
+        await pendingTx.save({ session });
+      });
+    } finally {
+      await session.endSession();
+    }
 
-    await this.usersService.consumeFreeTickets(userId, 1);
-
-    const tx = await this.txModel.create({
-      userId: new Types.ObjectId(userId),
-      raffleId: new Types.ObjectId(dto.raffleId),
-      quantity: 1,
-      amount: 0,
-      currency: raffle.currency ?? 'XAF',
-      provider: 'FREE_TICKET',
-      status: 'SUCCESS',
-      confirmedAt: new Date(),
-      providerRef: `FREE-${Date.now()}-${userId.slice(-6)}`,
-    });
-
-    await this.ticketsService.createMany({
-      raffleId: dto.raffleId,
-      userId,
-      transactionId: tx._id.toString(),
-      quantity: 1,
-    });
-
-    const part = await this.participationsService.upsertAfterPurchase({
-      raffleId: dto.raffleId,
-      userId,
-      quantity: 1,
-    });
-
-    await this.rafflesService.incrementStats(
-      dto.raffleId,
-      1,
-      part.wasCreated ? 1 : 0,
-    );
+    const tx = outcome.tx;
+    if (!tx) throw new BadGatewayException('Free ticket fulfillment failed');
 
     await this.usersService.evaluateMilestones(userId);
 
-    await this.notifications.create({
+    await this.notifications.createOnce({
       userId,
       type: 'FREE_TICKET_USED',
       title: 'Ticket gratuit utilisé 🎁',
@@ -1692,6 +1790,7 @@ export class PaymentsService {
         raffleId: dto.raffleId,
         transactionId: tx._id.toString(),
       },
+      dedupeKey: `free-ticket-used:${tx._id.toString()}`,
     });
 
     return {
@@ -1813,12 +1912,18 @@ export class PaymentsService {
     }
 
     if (normalizedStatus === 'success') {
-      tx.status = 'SUCCESS';
-      tx.confirmedAt = new Date();
+      this.assertRemoteTransactionMatches(tx, remote);
+      tx.providerRef = this.firstNonEmpty(
+        remote?.transactionRef,
+        remote?.data?.transactionRef,
+        tx.providerRef,
+      );
       await tx.save();
-      await this.finalizeSuccessfulTransaction(tx);
+      const finalized = await this.finalizeSuccessfulTransaction(
+        tx._id.toString(),
+      );
 
-      await this.notifications.create({
+      await this.notifications.createOnce({
         userId: tx.userId.toString(),
         type: 'PAYMENT_SUCCESS',
         title: 'Paiement confirmé ✅',
@@ -1828,9 +1933,14 @@ export class PaymentsService {
           transactionId: tx._id.toString(),
           deepLink: `/tabs/ticket-details/${tx.raffleId.toString()}`,
         },
+        dedupeKey: `payment-success:${tx._id.toString()}`,
       });
 
-      return { ok: true, status: 'SUCCESS', transactionId: tx._id.toString() };
+      return {
+        ok: true,
+        status: finalized.status,
+        transactionId: finalized._id.toString(),
+      };
     }
 
     if (normalizedStatus === 'failed') {
@@ -1899,6 +2009,7 @@ export class PaymentsService {
     let remoteStatus = String(payload?.status ?? '')
       .trim()
       .toLowerCase();
+    let remote: Record<string, any> | null = null;
     if (getWebhookSignatureMode(this.config) === 'provider-verify') {
       const remoteTransactionId = this.firstNonEmpty(
         tx.providerTransactionId,
@@ -1908,7 +2019,7 @@ export class PaymentsService {
         throw new BadRequestException('Missing provider transaction id');
       }
 
-      const remote = await this.digikuntz.getTransaction(remoteTransactionId);
+      remote = await this.digikuntz.getTransaction(remoteTransactionId);
       remoteStatus = String(remote?.status ?? '')
         .trim()
         .toLowerCase();
@@ -1955,27 +2066,45 @@ export class PaymentsService {
         };
       }
 
-      const partBefore = await this.participationsService.getOrCreate(
-        tx.raffleId.toString(),
-        tx.userId.toString(),
-      );
-      const already =
-        typeof partBefore.totalTicketsBought === 'number'
-          ? partBefore.totalTicketsBought
-          : 0;
-      const MAX = 200;
-      if (already + tx.quantity > MAX) {
-        throw new BadRequestException(
-          `Ticket limit reached for this raffle (max ${MAX})`,
+      if (!remote) {
+        const remoteTransactionId = this.firstNonEmpty(
+          tx.providerTransactionId,
+          providerTransactionId,
         );
+        if (!remoteTransactionId) {
+          throw new BadRequestException('Missing provider transaction id');
+        }
+        remote = await this.digikuntz.getTransaction(remoteTransactionId);
       }
-
-      tx.status = 'SUCCESS';
-      tx.confirmedAt = new Date();
+      this.assertRemoteTransactionMatches(tx, remote);
+      tx.providerRef = this.firstNonEmpty(
+        remote?.transactionRef,
+        remote?.data?.transactionRef,
+        tx.providerRef,
+      );
       await tx.save();
-      await this.finalizeSuccessfulTransaction(tx);
+      const finalized = await this.finalizeSuccessfulTransaction(
+        tx._id.toString(),
+      );
 
-      return { ok: true, transactionId: tx._id.toString(), status: tx.status };
+      await this.notifications.createOnce({
+        userId: tx.userId.toString(),
+        type: 'PAYMENT_SUCCESS',
+        title: 'Paiement confirmé ✅',
+        body: `Tes ${tx.quantity} ticket(s) ont été générés.`,
+        data: {
+          raffleId: tx.raffleId.toString(),
+          transactionId: tx._id.toString(),
+          deepLink: `/tabs/ticket-details/${tx.raffleId.toString()}`,
+        },
+        dedupeKey: `payment-success:${tx._id.toString()}`,
+      });
+
+      return {
+        ok: true,
+        transactionId: finalized._id.toString(),
+        status: finalized.status,
+      };
     }
 
     if (normalizedStatus === 'failed') {

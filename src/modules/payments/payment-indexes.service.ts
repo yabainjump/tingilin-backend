@@ -1,7 +1,10 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection } from 'mongoose';
-import { ensurePaymentIndexes } from './payment-indexes';
+import {
+  ensurePaymentIndexes,
+  ensureTicketFulfillmentIndex,
+} from './payment-indexes';
 
 @Injectable()
 export class PaymentIndexesService implements OnApplicationBootstrap {
@@ -13,6 +16,10 @@ export class PaymentIndexesService implements OnApplicationBootstrap {
     const collection = this.connection.collection('transactions');
     await ensurePaymentIndexes(collection, (message) =>
       this.logger.log(message),
+    );
+    await ensureTicketFulfillmentIndex(
+      this.connection.collection('tickets'),
+      (message) => this.logger.log(message),
     );
   }
 }

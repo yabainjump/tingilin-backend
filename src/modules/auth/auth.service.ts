@@ -459,6 +459,27 @@ export class AuthService {
     return { ok: true };
   }
 
+  async logoutWithRefreshToken(refreshToken: string) {
+    try {
+      const payload = await this.jwtService.verifyAsync(refreshToken, {
+        secret: this.refreshSecret(),
+      });
+      if (String(payload?.type ?? '') !== 'refresh') return { ok: true };
+      const user = await this.usersService.findById(String(payload?.sub ?? ''));
+      if (
+        user &&
+        String(user.currentRefreshTokenHash ?? '') ===
+          this.hashRefreshToken(refreshToken)
+      ) {
+        this.invalidateRefreshState(user, { bumpTokenVersion: true });
+        await user.save();
+      }
+    } catch {
+      // Logout is intentionally idempotent and never reveals token validity.
+    }
+    return { ok: true };
+  }
+
   private extractIdentifier(input: {
     identifier?: string;
     phoneOrEmail?: string;

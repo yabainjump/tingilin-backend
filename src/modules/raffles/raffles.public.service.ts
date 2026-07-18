@@ -6,7 +6,7 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 
-import { Raffle } from './schemas/raffle.schema';
+import { Raffle, RaffleStatus } from './schemas/raffle.schema';
 import { Product } from '../products/schemas/product.schema';
 
 type RaffleLean = {
@@ -48,7 +48,7 @@ export class RafflesPublicService {
 
     const raffles = await this.raffleModel
       .find({
-        status: 'LIVE',
+        status: RaffleStatus.LIVE,
         startAt: { $lte: now },
         endAt: { $gt: now },
       })

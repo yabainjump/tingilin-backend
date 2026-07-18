@@ -12,10 +12,10 @@ describe('TicketsService', () => {
     model = {
       find: jest.fn().mockReturnValue({
         sort: jest.fn().mockReturnThis(),
+        session: jest.fn().mockReturnThis(),
         exec: jest.fn().mockResolvedValue([]),
       }),
-      countDocuments: jest.fn(),
-      insertMany: jest.fn().mockResolvedValue([]),
+      bulkWrite: jest.fn().mockResolvedValue({ upsertedCount: 0 }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -39,50 +39,26 @@ describe('TicketsService', () => {
     quantity,
   });
 
-  it('createMany only inserts the MISSING tickets (idempotent)', async () => {
-    // 1 deja en base, quantity 3 -> n'insere que 2 (jamais de doublon).
-    model.countDocuments.mockReturnValue({
-      exec: jest.fn().mockResolvedValue(1),
-    });
-
+  it('createMany upserts one deterministic slot per requested ticket', async () => {
     await service.createMany(params(3));
 
-    expect(model.insertMany).toHaveBeenCalledTimes(1);
-    const docs = model.insertMany.mock.calls[0][0];
-    expect(docs).toHaveLength(2);
+    expect(model.bulkWrite).toHaveBeenCalledTimes(1);
+    const operations = model.bulkWrite.mock.calls[0][0];
+    expect(operations).toHaveLength(3);
+    expect(operations.map((operation: any) => operation.updateOne.filter.sequence))
+      .toEqual([0, 1, 2]);
+    expect(operations.every((operation: any) => operation.updateOne.upsert))
+      .toBe(true);
   });
 
-  it('createMany inserts nothing when the quantity already exists (replay)', async () => {
-    model.countDocuments.mockReturnValue({
-      exec: jest.fn().mockResolvedValue(3),
-    });
+  it('createMany uses the same unique slots on replay', async () => {
+    const input = params(2);
+    await service.createMany(input);
+    await service.createMany(input);
 
-    await service.createMany(params(3));
-
-    expect(model.insertMany).not.toHaveBeenCalled();
-  });
-
-  it('createMany re-loops on a duplicate-serial collision and completes the rest', async () => {
-    // 1er tour: 0 en base -> tente d'inserer 2, collision (11000).
-    // 2e tour: 1 s'est insere malgre tout -> il reste 1 a creer.
-    let count = 0;
-    model.countDocuments.mockReturnValue({
-      exec: jest.fn().mockImplementation(async () => {
-        const v = count;
-        count = 1; // apres la 1ere tentative, 1 ticket existe
-        return v;
-      }),
-    });
-    model.insertMany
-      .mockRejectedValueOnce(
-        Object.assign(new Error('dup'), { code: 11000 }),
-      )
-      .mockResolvedValueOnce([]);
-
-    await service.createMany(params(2));
-
-    expect(model.insertMany).toHaveBeenCalledTimes(2);
-    expect(model.insertMany.mock.calls[0][0]).toHaveLength(2); // tour 1: 2
-    expect(model.insertMany.mock.calls[1][0]).toHaveLength(1); // tour 2: le reste
+    const first = model.bulkWrite.mock.calls[0][0];
+    const second = model.bulkWrite.mock.calls[1][0];
+    expect(first.map((operation: any) => operation.updateOne.filter.sequence))
+      .toEqual(second.map((operation: any) => operation.updateOne.filter.sequence));
   });
 });

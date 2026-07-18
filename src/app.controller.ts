@@ -62,7 +62,7 @@ export class AppController {
   readiness() {
     const stateCode = this.mongoConnection.readyState;
     const stateLabel = MONGOOSE_STATES[stateCode] ?? 'unknown';
-    const mongoReady = stateCode === 1;
+    const mongoReady = Number(stateCode) === 1;
 
     const payload = {
       status: mongoReady ? 'ready' : 'not_ready',

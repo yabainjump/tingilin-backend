@@ -100,7 +100,7 @@ export class RafflesAdminController {
 
   @Get('winners/export.csv')
   @Header('Content-Type', 'text/csv; charset=utf-8')
-  @Header('Content-Disposition', 'attachment; filename=\"winners.csv\"')
+  @Header('Content-Disposition', 'attachment; filename="winners.csv"')
   async exportWinnersCsv(
     @Query('search') search?: string,
     @Query('status')

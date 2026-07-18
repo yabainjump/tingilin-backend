@@ -147,6 +147,13 @@ export class ShareController {
     const html = buildShareHtml(payload);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=300');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'none'; img-src https: http: data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+    );
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
     return res.status(200).send(html);
   }
 
@@ -294,8 +301,18 @@ export class ShareController {
   private normalizeAppPath(raw?: string): string {
     const value = String(raw ?? '').trim();
     if (!value) return '/landing';
-    if (/^https?:\/\//i.test(value)) return '/landing';
-    return value.startsWith('/') ? value : `/${value}`;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return '/landing';
+    if (value.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(value)) {
+      return '/landing';
+    }
+
+    try {
+      const parsed = new URL(value.startsWith('/') ? value : `/${value}`, 'https://app.invalid');
+      if (!/^\/[a-zA-Z0-9/_-]*$/.test(parsed.pathname)) return '/landing';
+      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    } catch {
+      return '/landing';
+    }
   }
 
   private fullName(user: any): string {
@@ -313,14 +330,6 @@ function esc(s: string) {
     .replace(/"/g, '&quot;');
 }
 
-function escJs(s: string) {
-  return String(s || '')
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\r/g, '')
-    .replace(/\n/g, '');
-}
-
 function buildShareHtml(input: {
   title: string;
   description: string;
@@ -335,7 +344,6 @@ function buildShareHtml(input: {
   const imageAlt = esc(input.imageAlt || 'Tinguilin');
   const url = esc(input.url);
   const redirectTo = esc(input.redirectTo);
-  const redirectToJs = escJs(input.redirectTo);
 
   return `<!doctype html>
 <html lang="fr">
@@ -364,8 +372,7 @@ function buildShareHtml(input: {
   <meta name="twitter:image:alt" content="${imageAlt}" />
 
   <link rel="canonical" href="${url}" />
-  <script>window.location.replace("${redirectToJs}");</script>
-  <noscript><meta http-equiv="refresh" content="0; url=${redirectTo}" /></noscript>
+  <meta http-equiv="refresh" content="0; url=${redirectTo}" />
 </head>
 <body>
   <p>Redirection… <a href="${redirectTo}">Ouvrir le lien</a></p>

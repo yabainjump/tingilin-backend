@@ -1,10 +1,11 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
-import { Connection, Model, Types } from 'mongoose';
+import { ClientSession, Connection, Model, Types } from 'mongoose';
 
 import { ProductsService } from '../products/products.service';
 import { CreateRaffleDto } from './dto/create-raffle.dto';
@@ -575,9 +576,15 @@ export class RafflesService {
   }
 
   private escapeCsvCell(value: unknown): string {
-    const input = String(value ?? '');
-    if (!/[",\n]/.test(input)) return input;
-    return `"${input.replace(/"/g, '""')}"`;
+    let input = '';
+    if (typeof value === 'string') input = value;
+    else if (typeof value === 'number') input = value.toString();
+    else if (typeof value === 'boolean') input = value ? 'true' : 'false';
+    else if (typeof value === 'bigint') input = value.toString();
+    else if (value != null) input = JSON.stringify(value) ?? '';
+    const safe = /^[\s]*[=+\-@]/.test(input) ? `'${input}` : input;
+    if (!/[",\n\r]/.test(safe)) return safe;
+    return `"${safe.replace(/"/g, '""')}"`;
   }
 
   async adminListWinners(params?: {
@@ -938,19 +945,38 @@ export class RafflesService {
     raffleId: string,
     ticketsDelta: number,
     participantsDelta: number,
+    session?: ClientSession,
   ) {
     this.ensureObjectId(raffleId, 'Invalid raffleId');
-    return this.raffleModel
+    const result = await this.raffleModel
       .updateOne(
-        { _id: raffleId },
+        {
+          _id: raffleId,
+          $expr: {
+            $or: [
+              { $lte: [{ $ifNull: ['$totalTickets', 0] }, 0] },
+              {
+                $lte: [
+                  { $add: [{ $ifNull: ['$ticketsSold', 0] }, ticketsDelta] },
+                  '$totalTickets',
+                ],
+              },
+            ],
+          },
+        },
         {
           $inc: {
             ticketsSold: ticketsDelta,
             participantsCount: participantsDelta,
           },
         },
+        { session },
       )
       .exec();
+    if (result.modifiedCount !== 1) {
+      throw new ConflictException('Not enough tickets left for this raffle');
+    }
+    return result;
   }
 
   private newDrawCommitment(): {

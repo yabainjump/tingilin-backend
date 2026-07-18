@@ -105,3 +105,30 @@ export async function ensurePaymentIndexes(
     }
   }
 }
+
+export async function ensureTicketFulfillmentIndex(
+  collection: PaymentIndexCollection,
+  log: (message: string) => void = () => undefined,
+) {
+  const name = 'transactionId_1_sequence_1';
+  const key = { transactionId: 1, sequence: 1 } as const;
+  const indexes = await readIndexes(collection);
+  const current = indexes.find(
+    (index) => index.name === name || hasSameKey(index, key),
+  );
+  const valid =
+    current?.name === name &&
+    current.unique === true &&
+    current.partialFilterExpression?.sequence?.$type === 'number';
+  if (valid) {
+    log(`Ticket fulfillment index already valid: ${name}`);
+    return;
+  }
+  if (current) await collection.dropIndex(String(current.name));
+  await collection.createIndex(key, {
+    name,
+    unique: true,
+    partialFilterExpression: { sequence: { $type: 'number' } },
+  });
+  log(`Created ticket fulfillment index: ${name}`);
+}

@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { getModelToken } from '@nestjs/mongoose';
+import { getConnectionToken, getModelToken } from '@nestjs/mongoose';
 import { PaymentsService } from './payments.service';
 import { Transaction } from './schemas/transaction.schema';
 import { RafflesService } from '../raffles/raffles.service';
@@ -61,6 +61,10 @@ describe('PaymentsService', () => {
         { provide: NotificationsService, useValue: {} },
         { provide: UsersService, useValue: {} },
         { provide: ConfigService, useValue: configService },
+        {
+          provide: getConnectionToken(),
+          useValue: { startSession: jest.fn() },
+        },
       ],
     }).compile();
 
