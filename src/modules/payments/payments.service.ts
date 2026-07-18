@@ -1970,7 +1970,29 @@ export class PaymentsService {
     }
 
     if (!tx.providerTransactionId) {
-      throw new BadRequestException('Missing providerTransactionId');
+      const recovered = await this.digikuntz.recoverPayin({
+        amount: Number(tx.amount),
+        reason: this.buildDigikuntzReason(tx),
+      });
+      if (recovered) {
+        const details = this.digikuntzPayinDetails(recovered);
+        tx.providerTransactionId =
+          details.providerTransactionId || undefined;
+        tx.providerRef = details.providerRef || tx.providerRef;
+        tx.paymentLink = details.paymentLink || tx.paymentLink;
+        tx.paymentWithTaxes = details.paymentWithTaxes;
+        tx.rawProviderStatus = details.providerStatus;
+        await tx.save();
+      }
+
+      if (!tx.providerTransactionId) {
+        return {
+          ok: true,
+          transactionId: tx._id.toString(),
+          status: 'PENDING',
+          remoteStatus: 'provider_mapping_pending',
+        };
+      }
     }
 
     const remote = await this.digikuntz.getTransaction(

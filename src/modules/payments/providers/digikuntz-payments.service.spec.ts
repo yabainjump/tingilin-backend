@@ -340,6 +340,42 @@ describe('DigikuntzPaymentsService', () => {
     });
   });
 
+  it('extracts a secure checkout URL when the 201 HTML response contains one', async () => {
+    const { service, post, get } = createService();
+    post.mockReturnValue(
+      of({
+        status: 201,
+        data: `<!doctype html><html><body>
+          <form method="post" action="https://checkout.flutterwave.com/v3/hosted/pay/abc123">
+            <script src="https://cdn.example.com/payment.js"></script>
+          </form>
+        </body></html>`,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      } as AxiosResponse),
+    );
+    get.mockReturnValue(
+      of({
+        data: { data: [] },
+        headers: { 'content-type': 'application/json' },
+      } as AxiosResponse),
+    );
+
+    const result = await service.createPayin({
+      amount: 100,
+      reason: 'Tingilin payment HTMLLINK x1',
+      userEmail: 'user@example.com',
+      userPhone: '691224472',
+      userCountry: 'Cameroon',
+      senderName: 'Test User',
+    });
+
+    expect(result).toMatchObject({
+      status: 'payin_pending',
+      paymentLink: 'https://checkout.flutterwave.com/v3/hosted/pay/abc123',
+    });
+    expect(get).toHaveBeenCalledTimes(3);
+  });
+
   it('rejects an HTML response returned instead of the payment API JSON', async () => {
     const { service, post, get } = createService();
     post.mockReturnValue(

@@ -318,28 +318,165 @@ export class DigikuntzPaymentsService {
   }
 
   private transactionList(payload: unknown): Record<string, unknown>[] {
-    const root = this.asRecord(this.decodeJsonPayload(payload));
-    const candidates = [
-      root.data,
-      root.transactions,
-      root.results,
-      this.asRecord(root.data).transactions,
+    const decoded = this.decodeJsonPayload(payload);
+    if (Array.isArray(decoded)) {
+      return decoded
+        .map((item) => this.asRecord(item))
+        .filter((item) => Object.keys(item).length > 0)
+        .slice(0, 200);
+    }
+    const root = this.asRecord(decoded);
+    const queue: Array<{ value: Record<string, unknown>; depth: number }> = [
+      { value: root, depth: 0 },
     ];
+    const visited = new Set<Record<string, unknown>>();
+    const records: Record<string, unknown>[] = [];
 
-    for (const candidate of candidates) {
-      if (Array.isArray(candidate)) {
-        return candidate
-          .map((item) => this.asRecord(item))
-          .filter((item) => Object.keys(item).length > 0);
+    while (queue.length > 0 && records.length < 200) {
+      const current = queue.shift()!;
+      if (visited.has(current.value)) continue;
+      visited.add(current.value);
+
+      for (const [key, value] of Object.entries(current.value)) {
+        if (Array.isArray(value)) {
+          if (/data|transactions?|results?|items?/i.test(key)) {
+            records.push(
+              ...value
+                .map((item) => this.asRecord(item))
+                .filter((item) => Object.keys(item).length > 0),
+            );
+          }
+          continue;
+        }
+
+        if (current.depth < 5) {
+          const nested = this.asRecord(value);
+          if (Object.keys(nested).length > 0) {
+            queue.push({ value: nested, depth: current.depth + 1 });
+          }
+        }
       }
     }
 
-    return [];
+    return records.slice(0, 200);
   }
 
   private sameAmount(value: unknown, expected: number): boolean {
     const amount = Number(value);
     return Number.isFinite(amount) && Math.abs(amount - expected) < 0.001;
+  }
+
+  private transactionReason(item: Record<string, unknown>): string {
+    return this.asString(
+      item.raisonForTransfer ??
+        item.reason ??
+        item.description ??
+        item.transferReason,
+    );
+  }
+
+  private transactionAmount(item: Record<string, unknown>): unknown {
+    return (
+      item.estimation ??
+      item.amount ??
+      item.receiverAmount ??
+      item.total ??
+      item.paymentWithTaxes
+    );
+  }
+
+  private checkoutUrl(value: unknown, requestUrl: string): string {
+    const raw = this.asString(value).replace(/&amp;/gi, '&');
+    if (!raw) return '';
+
+    try {
+      const parsed = new URL(raw, requestUrl);
+      if (parsed.protocol !== 'https:') return '';
+      if (
+        parsed.origin.toLowerCase() === 'https://app.digikuntz.com' &&
+        parsed.pathname.startsWith('/dev/')
+      ) {
+        return '';
+      }
+
+      const callback = new URL(this.callbackUrl);
+      if (
+        parsed.origin === callback.origin &&
+        parsed.pathname === callback.pathname
+      ) {
+        return '';
+      }
+
+      if (/\.(?:css|js|png|jpe?g|gif|svg|ico|woff2?|map)$/i.test(parsed.pathname)) {
+        return '';
+      }
+      return parsed.toString();
+    } catch {
+      return '';
+    }
+  }
+
+  private finalResponseUrl(response: unknown): string {
+    const root = this.asRecord(response);
+    const request = this.asRecord(root.request);
+    const nestedResponse = this.asRecord(request.res);
+    return this.firstRecordValue([root, request, nestedResponse], [
+      'responseUrl',
+      'responseURL',
+    ]);
+  }
+
+  private paymentLinkFromHtml(
+    html: string,
+    response: unknown,
+    requestUrl: string,
+  ): string {
+    const candidates: string[] = [];
+    const finalUrl = this.finalResponseUrl(response);
+    if (finalUrl && finalUrl !== requestUrl) candidates.push(finalUrl);
+
+    const patterns = [
+      /<meta[^>]+content=["'][^"']*url\s*=\s*([^"';>\s]+)[^"']*["']/gi,
+      /<(?:form|a|iframe)[^>]+(?:action|href|src)=["']([^"']+)["']/gi,
+      /(?:window\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']/gi,
+      /https:\/\/[^\s"'<>\\]+/gi,
+    ];
+    for (const pattern of patterns) {
+      for (const match of html.matchAll(pattern)) {
+        candidates.push(match[1] ?? match[0]);
+      }
+    }
+
+    const unique = [...new Set(candidates)]
+      .map((value) => this.checkoutUrl(value, requestUrl))
+      .filter(Boolean);
+    const preferred = unique.find((value) => {
+      const parsed = new URL(value);
+      return (
+        /checkout|flutterwave|payment/i.test(parsed.hostname) ||
+        /\/pay(?:ment)?\b|\/checkout\b|\/hosted\b/i.test(parsed.pathname)
+      );
+    });
+    return preferred ?? '';
+  }
+
+  private htmlSummary(html: string, response: unknown): string {
+    const title = html
+      .match(/<title[^>]*>([^<]{0,120})<\/title>/i)?.[1]
+      ?.replace(/[^\p{L}\p{N} .:_-]+/gu, ' ')
+      .trim();
+    const responseUrl = this.finalResponseUrl(response);
+    let responseHost = '';
+    try {
+      responseHost = responseUrl ? new URL(responseUrl).hostname : '';
+    } catch {
+      responseHost = '';
+    }
+    return `length=${html.length}; title=${title || 'none'}; responseHost=${responseHost || 'none'}`;
+  }
+
+  private async wait(milliseconds: number): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
   }
 
   async recoverPayin(input: {
@@ -354,17 +491,40 @@ export class DigikuntzPaymentsService {
           params: { page: 1, limit: 100 },
         }),
       );
-      const items = this.transactionList(response.data);
-      const matching = items.find((item) => {
-        const reason = this.asString(
-          item.raisonForTransfer ?? item.reason ?? item.description,
+      const decoded = this.decodeJsonPayload(response.data);
+      if (typeof decoded === 'string') {
+        const contentType = String(response.headers?.['content-type'] ?? '')
+          .trim()
+          .toLowerCase();
+        this.logger.warn(
+          `Digikuntz transactions-list returned non-JSON content; status=${Number(response.status ?? 0) || 'unknown'}; contentType=${contentType || 'unknown'}; ${this.htmlSummary(decoded, response)}`,
         );
-        const amount =
-          item.estimation ?? item.amount ?? item.receiverAmount ?? item.total;
-        return reason === input.reason && this.sameAmount(amount, input.amount);
-      });
+        return null;
+      }
+      const items = this.transactionList(decoded);
+      const expectedReason = input.reason.trim().toLowerCase();
+      const reasonSuffix = expectedReason.match(/[a-f0-9]{8}\s+x\d+$/i)?.[0];
+      const amountMatches = items.filter((item) =>
+        this.sameAmount(this.transactionAmount(item), input.amount),
+      );
+      const matching = amountMatches.find(
+        (item) => this.transactionReason(item).trim().toLowerCase() === expectedReason,
+      ) ??
+        (reasonSuffix
+          ? amountMatches.find((item) =>
+              this.transactionReason(item)
+                .trim()
+                .toLowerCase()
+                .includes(reasonSuffix),
+            )
+          : undefined);
 
-      if (!matching) return null;
+      if (!matching) {
+        this.logger.warn(
+          `Digikuntz recovery found no matching transaction; items=${items.length}; amountMatches=${amountMatches.length}`,
+        );
+        return null;
+      }
 
       const normalized = this.normalizeTransactionResponse(matching);
       if (normalized.paymentLink) return normalized;
@@ -459,17 +619,32 @@ export class DigikuntzPaymentsService {
       const payload = this.decodeJsonPayload(res.data);
       if (typeof payload === 'string') {
         this.logger.warn(
-          `Digikuntz createPayin returned non-JSON content; status=${Number(res.status ?? 0) || 'unknown'}; contentType=${contentType || 'unknown'}; baseUrl=${this.baseUrl}`,
+          `Digikuntz createPayin returned non-JSON content; status=${Number(res.status ?? 0) || 'unknown'}; contentType=${contentType || 'unknown'}; baseUrl=${this.baseUrl}; ${this.htmlSummary(payload, res)}`,
         );
-        const recovered = await this.recoverPayin({
-          amount: input.amount,
-          reason: input.reason,
-        });
-        if (recovered?.paymentLink) {
+        for (const delay of [0, 300, 900]) {
+          if (delay > 0) await this.wait(delay);
+          const recovered = await this.recoverPayin({
+            amount: input.amount,
+            reason: input.reason,
+          });
+          if (recovered?.paymentLink) {
+            this.logger.log(
+              `Digikuntz createPayin recovered transaction ${recovered.id ?? 'unknown'} after a non-JSON response`,
+            );
+            return recovered;
+          }
+        }
+
+        const paymentLink = this.paymentLinkFromHtml(payload, res, url);
+        if (paymentLink) {
           this.logger.log(
-            `Digikuntz createPayin recovered transaction ${recovered.id ?? 'unknown'} after a non-JSON response`,
+            `Digikuntz createPayin recovered checkout URL from HTML; host=${new URL(paymentLink).hostname}`,
           );
-          return recovered;
+          return {
+            status: 'payin_pending',
+            paymentLink,
+            data: { paymentLink },
+          };
         }
         throw new BadGatewayException(
           'Digikuntz created an unreadable payment response and the transaction could not be recovered',
