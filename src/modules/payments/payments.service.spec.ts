@@ -17,6 +17,7 @@ describe('PaymentsService', () => {
   let txModelMock: Record<string, jest.Mock>;
   let digikuntzMock: {
     getTransaction: jest.Mock;
+    recoverPayin: jest.Mock;
     assertConfigured: jest.Mock;
   };
 
@@ -46,6 +47,7 @@ describe('PaymentsService', () => {
     };
     digikuntzMock = {
       getTransaction: jest.fn(),
+      recoverPayin: jest.fn(),
       assertConfigured: jest.fn(),
     };
 
@@ -126,5 +128,47 @@ describe('PaymentsService', () => {
     expect(tx.status).toBe('PENDING');
     expect(tx.save).toHaveBeenCalled();
     expect(result).toMatchObject({ ok: true, status: 'PENDING' });
+  });
+
+  it('repairs an incomplete idempotent intent from the Digikuntz transaction list', async () => {
+    const tx = {
+      _id: { toString: () => '665f1a2b3c4d5e6f7a8b9c0d' },
+      provider: 'DIGIKUNTZ',
+      amount: 100,
+      currency: 'XAF',
+      quantity: 1,
+      status: 'PENDING',
+      paymentLink: undefined,
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    digikuntzMock.recoverPayin.mockResolvedValue({
+      id: 'provider-id',
+      status: 'payin_pending',
+      transactionRef: 'RECOVER-REF',
+      paymentWithTaxes: '105',
+      paymentLink: 'https://checkout.example.com/pay/recovered',
+    });
+
+    const result = await (service as any).recoverIncompleteDigikuntzIntent(
+      tx,
+      100,
+    );
+
+    expect(digikuntzMock.recoverPayin).toHaveBeenCalledWith({
+      amount: 100,
+      reason: 'Tingilin payment 7A8B9C0D x1',
+    });
+    expect(tx).toMatchObject({
+      providerTransactionId: 'provider-id',
+      providerRef: 'RECOVER-REF',
+      paymentLink: 'https://checkout.example.com/pay/recovered',
+      paymentWithTaxes: 105,
+      rawProviderStatus: 'payin_pending',
+    });
+    expect(tx.save).toHaveBeenCalled();
+    expect(result).toMatchObject({
+      paymentLink: 'https://checkout.example.com/pay/recovered',
+      idempotent: true,
+    });
   });
 });

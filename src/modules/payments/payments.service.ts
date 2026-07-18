@@ -605,6 +605,86 @@ export class PaymentsService {
     };
   }
 
+  private digikuntzPayinDetails(payin: Record<string, any>) {
+    const data =
+      payin?.data && typeof payin.data === 'object' ? payin.data : {};
+    const providerTransactionId = this.firstNonEmpty(
+      payin?.id,
+      data?.id,
+      payin?.transactionId,
+      payin?.providerTransactionId,
+    );
+    const providerRef = this.firstNonEmpty(
+      payin?.transactionRef,
+      data?.transactionRef,
+      payin?.providerRef,
+      payin?.reference,
+      payin?.ref,
+    );
+    const paymentLink = this.firstNonEmpty(
+      payin?.paymentLink,
+      data?.paymentLink,
+      payin?.payment_url,
+      payin?.url,
+      payin?.link,
+    );
+    const providerStatus = this.firstNonEmpty(
+      payin?.status,
+      payin?.state,
+      'PENDING',
+    );
+    const paymentWithTaxes = Number(
+      payin?.paymentWithTaxes ??
+        data?.paymentWithTaxes ??
+        payin?.amountWithTaxes ??
+        payin?.amount_with_taxes ??
+        0,
+    );
+
+    return {
+      providerTransactionId,
+      providerRef,
+      paymentLink,
+      providerStatus,
+      paymentWithTaxes: Number.isFinite(paymentWithTaxes)
+        ? paymentWithTaxes
+        : 0,
+    };
+  }
+
+  private async recoverIncompleteDigikuntzIntent(
+    tx: TransactionDocument,
+    ticketUnitPrice: number,
+  ) {
+    if (tx.status !== 'PENDING') {
+      throw new ConflictException(
+        'Cette tentative de paiement ne peut plus être reprise. Recharge la page puis réessaie.',
+      );
+    }
+
+    const recovered = await this.digikuntz.recoverPayin({
+      amount: Number(tx.amount),
+      reason: this.buildDigikuntzReason(tx),
+    });
+    const details = recovered
+      ? this.digikuntzPayinDetails(recovered)
+      : null;
+    if (!details?.paymentLink) {
+      throw new ConflictException(
+        'Cette tentative de paiement est encore en cours de récupération. Patiente quelques secondes puis réessaie.',
+      );
+    }
+
+    tx.providerTransactionId = details.providerTransactionId || undefined;
+    tx.providerRef = details.providerRef || undefined;
+    tx.paymentLink = details.paymentLink;
+    tx.paymentWithTaxes = details.paymentWithTaxes;
+    tx.rawProviderStatus = details.providerStatus;
+    await tx.save();
+
+    return this.buildIntentResponse(tx, ticketUnitPrice, true);
+  }
+
   private async findRecentMatchingIntent(params: {
     userId: string;
     raffleId: string;
@@ -811,9 +891,7 @@ export class PaymentsService {
         .exec();
       if (existing) {
         if (existing.provider === 'DIGIKUNTZ' && !existing.paymentLink) {
-          throw new ConflictException(
-            'Cette tentative de paiement est incomplète. Recharge la page puis réessaie.',
-          );
+          return this.recoverIncompleteDigikuntzIntent(existing, unit);
         }
         return this.buildIntentResponse(existing, unit, true);
       }
@@ -870,9 +948,7 @@ export class PaymentsService {
 
         if (existing) {
           if (existing.provider === 'DIGIKUNTZ' && !existing.paymentLink) {
-            throw new ConflictException(
-              'Cette tentative de paiement est incomplète. Recharge la page puis réessaie.',
-            );
+            return this.recoverIncompleteDigikuntzIntent(existing, unit);
           }
           return this.buildIntentResponse(existing, unit, true);
         }

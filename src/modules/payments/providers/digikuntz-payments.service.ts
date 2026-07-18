@@ -317,6 +317,65 @@ export class DigikuntzPaymentsService {
     }
   }
 
+  private transactionList(payload: unknown): Record<string, unknown>[] {
+    const root = this.asRecord(this.decodeJsonPayload(payload));
+    const candidates = [
+      root.data,
+      root.transactions,
+      root.results,
+      this.asRecord(root.data).transactions,
+    ];
+
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate)) {
+        return candidate
+          .map((item) => this.asRecord(item))
+          .filter((item) => Object.keys(item).length > 0);
+      }
+    }
+
+    return [];
+  }
+
+  private sameAmount(value: unknown, expected: number): boolean {
+    const amount = Number(value);
+    return Number.isFinite(amount) && Math.abs(amount - expected) < 0.001;
+  }
+
+  async recoverPayin(input: {
+    amount: number;
+    reason: string;
+  }): Promise<DigikuntzTransactionResponse | null> {
+    try {
+      const url = `${this.baseUrl}/transactions-list`;
+      const response = await firstValueFrom(
+        this.http.get(url, {
+          headers: this.headers(),
+          params: { page: 1, limit: 100 },
+        }),
+      );
+      const items = this.transactionList(response.data);
+      const matching = items.find((item) => {
+        const reason = this.asString(
+          item.raisonForTransfer ?? item.reason ?? item.description,
+        );
+        const amount =
+          item.estimation ?? item.amount ?? item.receiverAmount ?? item.total;
+        return reason === input.reason && this.sameAmount(amount, input.amount);
+      });
+
+      if (!matching) return null;
+
+      const normalized = this.normalizeTransactionResponse(matching);
+      if (normalized.paymentLink) return normalized;
+      if (!normalized.id) return null;
+
+      return await this.getTransaction(normalized.id);
+    } catch (error: unknown) {
+      this.throwUpstreamError('recoverPayin', error);
+    }
+  }
+
   private normalizeTransactionResponse(
     payload: unknown,
   ): DigikuntzTransactionResponse {
@@ -402,8 +461,18 @@ export class DigikuntzPaymentsService {
         this.logger.warn(
           `Digikuntz createPayin returned non-JSON content; status=${Number(res.status ?? 0) || 'unknown'}; contentType=${contentType || 'unknown'}; baseUrl=${this.baseUrl}`,
         );
+        const recovered = await this.recoverPayin({
+          amount: input.amount,
+          reason: input.reason,
+        });
+        if (recovered?.paymentLink) {
+          this.logger.log(
+            `Digikuntz createPayin recovered transaction ${recovered.id ?? 'unknown'} after a non-JSON response`,
+          );
+          return recovered;
+        }
         throw new BadGatewayException(
-          'Digikuntz returned an invalid response instead of payment JSON; verify the production API credentials and contact Digikuntz if the issue persists',
+          'Digikuntz created an unreadable payment response and the transaction could not be recovered',
         );
       }
       const normalized = this.normalizeTransactionResponse(payload);

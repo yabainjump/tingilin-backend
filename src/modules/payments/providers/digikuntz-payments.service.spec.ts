@@ -274,13 +274,82 @@ describe('DigikuntzPaymentsService', () => {
     });
   });
 
+  it('recovers a transaction from the documented list after a 201 HTML response', async () => {
+    const { service, post, get } = createService();
+    post.mockReturnValue(
+      of({
+        status: 201,
+        data: '<!doctype html><html><body>checkout</body></html>',
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      } as AxiosResponse),
+    );
+    get
+      .mockReturnValueOnce(
+        of({
+          data: {
+            data: [
+              {
+                _id: 'provider-id',
+                estimation: '100',
+                raisonForTransfer: 'Tingilin payment RECOVER x1',
+                transactionRef: 'RECOVER-REF',
+                status: 'payin_pending',
+              },
+            ],
+          },
+        } as AxiosResponse),
+      )
+      .mockReturnValueOnce(
+        of({
+          data: {
+            id: 'provider-id',
+            status: 'payin_pending',
+            data: {
+              transactionRef: 'RECOVER-REF',
+              paymentLink: 'https://checkout.example.com/pay/recovered',
+            },
+          },
+        } as AxiosResponse),
+      );
+
+    const result = await service.createPayin({
+      amount: 100,
+      reason: 'Tingilin payment RECOVER x1',
+      userEmail: 'user@example.com',
+      userPhone: '691224472',
+      userCountry: 'Cameroon',
+      senderName: 'Test User',
+    });
+
+    expect(get).toHaveBeenNthCalledWith(
+      1,
+      'https://app.digikuntz.com/dev/transactions-list',
+      {
+        headers: {
+          Accept: 'application/json',
+          'x-user-id': 'account-user-id',
+          'x-secret-key': 'SK-secret',
+        },
+        params: { page: 1, limit: 100 },
+      },
+    );
+    expect(result).toMatchObject({
+      id: 'provider-id',
+      transactionRef: 'RECOVER-REF',
+      paymentLink: 'https://checkout.example.com/pay/recovered',
+    });
+  });
+
   it('rejects an HTML response returned instead of the payment API JSON', async () => {
-    const { service, post } = createService();
+    const { service, post, get } = createService();
     post.mockReturnValue(
       of({
         data: '<!doctype html><html></html>',
         headers: { 'content-type': 'text/html' },
       } as AxiosResponse),
+    );
+    get.mockReturnValue(
+      of({ data: { data: [] }, headers: { 'content-type': 'application/json' } } as AxiosResponse),
     );
 
     await expect(
@@ -292,7 +361,7 @@ describe('DigikuntzPaymentsService', () => {
         userCountry: 'Cameroon',
         senderName: 'Test User',
       }),
-    ).rejects.toThrow('Digikuntz returned an invalid response');
+    ).rejects.toThrow('transaction could not be recovered');
   });
 
   it.each([
