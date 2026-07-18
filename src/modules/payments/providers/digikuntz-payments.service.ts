@@ -127,14 +127,20 @@ export class DigikuntzPaymentsService {
         'Invalid payment config: DIGIKUNTZ_BASE_URL must be an absolute URL',
       );
     }
-    if (!['http:', 'https:'].includes(parsedBaseUrl.protocol)) {
+    if (parsedBaseUrl.protocol !== 'https:') {
       throw new ServiceUnavailableException(
-        'Invalid payment config: DIGIKUNTZ_BASE_URL must use HTTP(S)',
+        'Invalid payment config: DIGIKUNTZ_BASE_URL must use HTTPS',
       );
     }
-    if (parsedBaseUrl.hostname.toLowerCase() === 'payments.digikuntz.com') {
+    const normalizedPath = parsedBaseUrl.pathname.replace(/\/+$/, '') || '/';
+    if (
+      parsedBaseUrl.origin.toLowerCase() !== 'https://app.digikuntz.com' ||
+      normalizedPath !== '/dev' ||
+      parsedBaseUrl.search ||
+      parsedBaseUrl.hash
+    ) {
       throw new ServiceUnavailableException(
-        'Invalid payment config: payments.digikuntz.com is the web portal; use https://app.digikuntz.com/dev',
+        'Invalid payment config: DIGIKUNTZ_BASE_URL must be exactly https://app.digikuntz.com/dev',
       );
     }
   }
@@ -292,9 +298,23 @@ export class DigikuntzPaymentsService {
   private headers() {
     this.assertConfigured();
     return {
+      Accept: 'application/json',
       'x-user-id': this.userId,
       'x-secret-key': this.secretKey,
     };
+  }
+
+  private decodeJsonPayload(payload: unknown): unknown {
+    if (typeof payload !== 'string') return payload;
+
+    const trimmed = payload.trim();
+    if (!trimmed) return payload;
+
+    try {
+      return JSON.parse(trimmed) as unknown;
+    } catch {
+      return payload;
+    }
   }
 
   private normalizeTransactionResponse(
@@ -377,24 +397,22 @@ export class DigikuntzPaymentsService {
       const contentType = String(res.headers?.['content-type'] ?? '')
         .trim()
         .toLowerCase();
-      if (
-        typeof res.data === 'string' &&
-        !contentType.includes('application/json')
-      ) {
+      const payload = this.decodeJsonPayload(res.data);
+      if (typeof payload === 'string') {
         this.logger.warn(
-          `Digikuntz createPayin returned non-JSON content; contentType=${contentType || 'unknown'}`,
+          `Digikuntz createPayin returned non-JSON content; status=${Number(res.status ?? 0) || 'unknown'}; contentType=${contentType || 'unknown'}; baseUrl=${this.baseUrl}`,
         );
         throw new BadGatewayException(
-          'Digikuntz returned a non-JSON response; verify DIGIKUNTZ_BASE_URL=https://app.digikuntz.com/dev',
+          'Digikuntz returned an invalid response instead of payment JSON; verify the production API credentials and contact Digikuntz if the issue persists',
         );
       }
-      const normalized = this.normalizeTransactionResponse(res.data);
+      const normalized = this.normalizeTransactionResponse(payload);
       if (
         !normalized.id &&
         !normalized.transactionRef &&
         !normalized.paymentLink
       ) {
-        const records = this.transactionRecords(res.data);
+        const records = this.transactionRecords(payload);
         this.logger.warn(
           `Digikuntz createPayin response has no transaction fields; shape=${this.payloadShape(records) || 'empty'}`,
         );

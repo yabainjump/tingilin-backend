@@ -73,6 +73,7 @@ describe('DigikuntzPaymentsService', () => {
       },
       {
         headers: {
+          Accept: 'application/json',
           'x-user-id': 'account-user-id',
           'x-secret-key': 'SK-secret',
         },
@@ -101,6 +102,7 @@ describe('DigikuntzPaymentsService', () => {
       'https://app.digikuntz.com/dev/transaction',
       {
         headers: {
+          Accept: 'application/json',
           'x-user-id': 'account-user-id',
           'x-secret-key': 'SK-secret',
         },
@@ -235,8 +237,41 @@ describe('DigikuntzPaymentsService', () => {
     });
 
     expect(() => service.assertConfigured()).toThrow(
-      'payments.digikuntz.com is the web portal',
+      'DIGIKUNTZ_BASE_URL must be exactly https://app.digikuntz.com/dev',
     );
+  });
+
+  it('accepts JSON serialized as text by the provider', async () => {
+    const { service, post } = createService();
+    post.mockReturnValue(
+      of({
+        status: 201,
+        data: JSON.stringify({
+          id: 'provider-id',
+          status: 'payin_pending',
+          data: {
+            transactionRef: 'TEXT-REF',
+            paymentLink: 'https://checkout.example.com/pay/text',
+          },
+        }),
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+      } as AxiosResponse),
+    );
+
+    const result = await service.createPayin({
+      amount: 100,
+      reason: 'Test text JSON response',
+      userEmail: 'user@example.com',
+      userPhone: '691224472',
+      userCountry: 'Cameroon',
+      senderName: 'Test User',
+    });
+
+    expect(result).toMatchObject({
+      id: 'provider-id',
+      transactionRef: 'TEXT-REF',
+      paymentLink: 'https://checkout.example.com/pay/text',
+    });
   });
 
   it('rejects an HTML response returned instead of the payment API JSON', async () => {
@@ -257,7 +292,7 @@ describe('DigikuntzPaymentsService', () => {
         userCountry: 'Cameroon',
         senderName: 'Test User',
       }),
-    ).rejects.toThrow('Digikuntz returned a non-JSON response');
+    ).rejects.toThrow('Digikuntz returned an invalid response');
   });
 
   it.each([
