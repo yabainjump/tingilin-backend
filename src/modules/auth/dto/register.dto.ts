@@ -49,9 +49,5 @@ export class RegisterDto {
 
   @IsOptional()
   @IsString()
-  avatar?: string;
-
-  @IsOptional()
-  @IsString()
   referralCode?: string;
 }

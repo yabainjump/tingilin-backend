@@ -230,9 +230,7 @@ export class DigikuntzPaymentsService {
     if (!value) return '';
     try {
       const parsed = new URL(value);
-      return ['http:', 'https:'].includes(parsed.protocol)
-        ? parsed.toString()
-        : '';
+      return parsed.protocol === 'https:' ? parsed.toString() : '';
     } catch {
       return '';
     }
@@ -407,7 +405,9 @@ export class DigikuntzPaymentsService {
         return '';
       }
 
-      if (/\.(?:css|js|png|jpe?g|gif|svg|ico|woff2?|map)$/i.test(parsed.pathname)) {
+      if (
+        /\.(?:css|js|png|jpe?g|gif|svg|ico|woff2?|map)$/i.test(parsed.pathname)
+      ) {
         return '';
       }
       return parsed.toString();
@@ -420,10 +420,10 @@ export class DigikuntzPaymentsService {
     const root = this.asRecord(response);
     const request = this.asRecord(root.request);
     const nestedResponse = this.asRecord(request.res);
-    return this.firstRecordValue([root, request, nestedResponse], [
-      'responseUrl',
-      'responseURL',
-    ]);
+    return this.firstRecordValue(
+      [root, request, nestedResponse],
+      ['responseUrl', 'responseURL'],
+    );
   }
 
   private paymentLinkFromHtml(
@@ -507,9 +507,12 @@ export class DigikuntzPaymentsService {
       const amountMatches = items.filter((item) =>
         this.sameAmount(this.transactionAmount(item), input.amount),
       );
-      const matching = amountMatches.find(
-        (item) => this.transactionReason(item).trim().toLowerCase() === expectedReason,
-      ) ??
+      const matching =
+        amountMatches.find(
+          (item) =>
+            this.transactionReason(item).trim().toLowerCase() ===
+            expectedReason,
+        ) ??
         (reasonSuffix
           ? amountMatches.find((item) =>
               this.transactionReason(item)
@@ -575,6 +578,20 @@ export class DigikuntzPaymentsService {
       'amountWithTaxes',
       'amount_with_taxes',
     ]);
+    const sanitizedData: Record<string, any> = { ...flattened };
+    for (const key of [
+      'paymentLink',
+      'payment_link',
+      'paymentUrl',
+      'payment_url',
+      'checkoutUrl',
+      'checkout_url',
+      'link',
+      'url',
+    ]) {
+      delete sanitizedData[key];
+    }
+    if (paymentLink) sanitizedData.paymentLink = paymentLink;
 
     return {
       ...root,
@@ -584,7 +601,7 @@ export class DigikuntzPaymentsService {
       transactionRef: transactionRef || undefined,
       paymentLink: paymentLink || undefined,
       paymentWithTaxes: paymentWithTaxes || undefined,
-      data: flattened,
+      data: sanitizedData,
     };
   }
 

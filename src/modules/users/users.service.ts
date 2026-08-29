@@ -64,7 +64,9 @@ export class UsersService {
   }
 
   async findByReferralCode(code: string) {
-    const normalized = String(code ?? '').trim().toUpperCase();
+    const normalized = String(code ?? '')
+      .trim()
+      .toUpperCase();
     if (!normalized) return null;
     return this.userModel.findOne({ referralCode: normalized }).exec();
   }
@@ -108,12 +110,6 @@ export class UsersService {
     if (dto.firstName !== undefined) $set.firstName = dto.firstName.trim();
     if (dto.lastName !== undefined) $set.lastName = dto.lastName.trim();
     if (dto.phone !== undefined) $set.phone = normalizeStoredPhone(dto.phone);
-    if (dto.avatar !== undefined) {
-      if (String(dto.avatar ?? '').trim().startsWith('data:')) {
-        throw new BadRequestException('Use the avatar upload endpoint for images');
-      }
-      $set.avatar = this.normalizeAvatar(dto.avatar);
-    }
 
     const updated = await this.userModel
       .findByIdAndUpdate(id, { $set }, { new: true })
@@ -121,6 +117,27 @@ export class UsersService {
 
     if (!updated) throw new NotFoundException('User not found');
     return updated;
+  }
+
+  async replaceAvatar(id: string, avatar: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Invalid user id');
+    }
+
+    const previous = await this.userModel
+      .findByIdAndUpdate(
+        id,
+        { $set: { avatar: this.normalizeAvatar(avatar) } },
+        { new: false },
+      )
+      .exec();
+    if (!previous) throw new NotFoundException('User not found');
+
+    const user = await this.findById(id);
+    return {
+      user,
+      previousAvatar: this.normalizeAvatar(previous.avatar),
+    };
   }
 
   async createUser(params: {
@@ -135,7 +152,9 @@ export class UsersService {
     referredBy?: string | null;
   }) {
     const email = params.email.trim().toLowerCase();
-    const username = String(params.username ?? '').trim().toLowerCase();
+    const username = String(params.username ?? '')
+      .trim()
+      .toLowerCase();
     const firstName = params.firstName.trim();
     const lastName = params.lastName.trim();
     const phone = normalizeStoredPhone(params.phone);
@@ -199,7 +218,11 @@ export class UsersService {
   }
 
   private buildReferralLink(code: string): string {
-    const encodedCode = encodeURIComponent(String(code ?? '').trim().toUpperCase());
+    const encodedCode = encodeURIComponent(
+      String(code ?? '')
+        .trim()
+        .toUpperCase(),
+    );
     const appBase = this.publicAppOrigin();
     return `${appBase}/auth/register?ref=${encodedCode}&referralCode=${encodedCode}`;
   }
@@ -226,7 +249,9 @@ export class UsersService {
   }
 
   private async countActiveAdmins(): Promise<number> {
-    return this.userModel.countDocuments({ role: 'ADMIN', status: 'ACTIVE' }).exec();
+    return this.userModel
+      .countDocuments({ role: 'ADMIN', status: 'ACTIVE' })
+      .exec();
   }
 
   async updateRole(
@@ -418,7 +443,8 @@ export class UsersService {
     return {
       id: String(u._id),
       email: u.email,
-      username: String((u as any).username ?? '').trim() || u.email.split('@')[0],
+      username:
+        String((u as any).username ?? '').trim() || u.email.split('@')[0],
       firstName: u.firstName,
       lastName: u.lastName,
       phone: u.phone,
@@ -505,48 +531,46 @@ export class UsersService {
       ])
       .exec();
 
-    return rows
-      .map((x) => {
-        const ticketsCount = Number(x.ticketsCount ?? 0);
-        const status = String(x.status ?? '')
-          .trim()
-          .toUpperCase();
-        const endsAt = x.endsAt ? new Date(x.endsAt) : null;
-        const endsAtMs = endsAt ? endsAt.getTime() : NaN;
+    return rows.map((x) => {
+      const ticketsCount = Number(x.ticketsCount ?? 0);
+      const status = String(x.status ?? '')
+        .trim()
+        .toUpperCase();
+      const endsAt = x.endsAt ? new Date(x.endsAt) : null;
+      const endsAtMs = endsAt ? endsAt.getTime() : NaN;
 
-        const isEndedByStatus = ['CLOSED', 'DRAWN', 'FINISHED', 'ENDED'].includes(
-          status,
-        );
-        const isEndedByTime = Number.isFinite(endsAtMs) ? endsAtMs <= now : false;
-        const isEnded = isEndedByStatus || isEndedByTime;
+      const isEndedByStatus = ['CLOSED', 'DRAWN', 'FINISHED', 'ENDED'].includes(
+        status,
+      );
+      const isEndedByTime = Number.isFinite(endsAtMs) ? endsAtMs <= now : false;
+      const isEnded = isEndedByStatus || isEndedByTime;
 
-        const hasWinner = !!x.winnerUserId;
-        const isWon =
-          hasWinner && String(x.winnerUserId) === String(userId);
+      const hasWinner = !!x.winnerUserId;
+      const isWon = hasWinner && String(x.winnerUserId) === String(userId);
 
-        let result: HistoryResult = 'NONE';
-        if (isWon) {
-          result = 'WON';
-        } else if (isEnded && hasWinner) {
-          result = 'LOST';
-        }
+      let result: HistoryResult = 'NONE';
+      if (isWon) {
+        result = 'WON';
+      } else if (isEnded && hasWinner) {
+        result = 'LOST';
+      }
 
-        return {
-          raffleId: x.raffleId ? String(x.raffleId) : '',
-          title: String(x.title ?? 'Tombola'),
-          imageUrl: String(x.imageUrl ?? ''),
-          status: status || undefined,
-          endsAt:
-            Number.isFinite(endsAtMs) && endsAt
-              ? endsAt.toISOString()
-              : undefined,
-          dateLabel: this.formatDateLabel(
-            x.lastAt ? new Date(x.lastAt) : new Date(),
-          ),
-          ticketsLabel: `${ticketsCount} Ticket${ticketsCount > 1 ? 's' : ''}`,
-          result,
-        };
-      });
+      return {
+        raffleId: x.raffleId ? String(x.raffleId) : '',
+        title: String(x.title ?? 'Tombola'),
+        imageUrl: String(x.imageUrl ?? ''),
+        status: status || undefined,
+        endsAt:
+          Number.isFinite(endsAtMs) && endsAt
+            ? endsAt.toISOString()
+            : undefined,
+        dateLabel: this.formatDateLabel(
+          x.lastAt ? new Date(x.lastAt) : new Date(),
+        ),
+        ticketsLabel: `${ticketsCount} Ticket${ticketsCount > 1 ? 's' : ''}`,
+        result,
+      };
+    });
   }
 
   // Filtre de garde anti double-credit qui tolere l'ABSENCE du champ en base.
@@ -562,7 +586,11 @@ export class UsersService {
     if (currentValue === 0) {
       return {
         _id: userId,
-        $or: [{ [field]: 0 }, { [field]: { $exists: false } }, { [field]: null }],
+        $or: [
+          { [field]: 0 },
+          { [field]: { $exists: false } },
+          { [field]: null },
+        ],
       };
     }
     return { _id: userId, [field]: currentValue };
@@ -624,7 +652,9 @@ export class UsersService {
     // Le filtre sur loyaltyRewardsGranted empeche tout double-credit en cas
     // d'appels concurrents (deux paiements finalises en meme temps).
     let loyaltyRewardDelta = 0;
-    const loyaltyTargetRewards = Math.floor(playedRafflesCount / LOYALTY_TARGET);
+    const loyaltyTargetRewards = Math.floor(
+      playedRafflesCount / LOYALTY_TARGET,
+    );
     const currentLoyaltyRewards = Number(user.loyaltyRewardsGranted ?? 0);
 
     if (loyaltyTargetRewards > currentLoyaltyRewards) {
@@ -640,7 +670,11 @@ export class UsersService {
 
       const res = await this.userModel
         .updateOne(
-          this.rewardGuardFilter(uid, 'loyaltyRewardsGranted', currentLoyaltyRewards),
+          this.rewardGuardFilter(
+            uid,
+            'loyaltyRewardsGranted',
+            currentLoyaltyRewards,
+          ),
           {
             $inc: { loyaltyRewardsGranted: delta, freeTicketsBalance: delta },
             $push: { rewardHistory: { $each: historyItems, $slice: -100 } },
@@ -736,11 +770,7 @@ export class UsersService {
     };
   }
 
-  async consumeFreeTickets(
-    userId: string,
-    count = 1,
-    session?: ClientSession,
-  ) {
+  async consumeFreeTickets(userId: string, count = 1, session?: ClientSession) {
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException('Invalid user id');
     }
@@ -814,9 +844,10 @@ export class UsersService {
     const loyaltyRaw = loyaltyPlayedCount % LOYALTY_TARGET;
     const loyaltyProgress =
       loyaltyRaw === 0 && loyaltyPlayedCount > 0 ? LOYALTY_TARGET : loyaltyRaw;
-    const rewardHistory = (Array.isArray((user as any).rewardHistory)
-      ? [...(user as any).rewardHistory]
-      : []
+    const rewardHistory = (
+      Array.isArray((user as any).rewardHistory)
+        ? [...(user as any).rewardHistory]
+        : []
     )
       .sort(
         (a: any, b: any) =>

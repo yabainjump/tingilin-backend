@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Get,
+  Logger,
   Patch,
   Query,
   Req,
@@ -16,18 +17,23 @@ import { UpdateMeDto } from './dto/update-me.dto';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { memoryStorage } from 'multer';
-import { storeOptimizedImageFromBuffer } from '../../common/uploads/image-storage';
+import {
+  removeStoredImage,
+  storeOptimizedImageFromBuffer,
+} from '../../common/uploads/image-storage';
 
 @ApiTags('Users')
 @ApiBearerAuth('access-token')
 @Controller('users')
 export class UsersController {
+  private readonly logger = new Logger(UsersController.name);
+
   constructor(private readonly usersService: UsersService) {}
 
   @UseGuards(JwtAuthGuard)
   @Get('me')
   async me(@Req() req: any) {
-    const userId = req.user?.sub; 
+    const userId = req.user?.sub;
     const user = await this.usersService.findById(userId);
     return this.usersService.toPublic(user);
   }
@@ -85,10 +91,23 @@ export class UsersController {
       fit: 'cover',
       quality: 78,
     });
-    const user = await this.usersService.updateMe(req.user?.sub, {
-      avatar: avatarPath,
-    });
-    return this.usersService.toPublic(user);
+    let replacement: { user: any; previousAvatar: string };
+    try {
+      replacement = await this.usersService.replaceAvatar(
+        req.user?.sub,
+        avatarPath,
+      );
+    } catch (error) {
+      await removeStoredImage(avatarPath, 'avatars').catch(() => false);
+      throw error;
+    }
+
+    await removeStoredImage(replacement.previousAvatar, 'avatars').catch(
+      (error: unknown) => {
+        this.logger.warn(`Previous avatar cleanup failed: ${String(error)}`);
+      },
+    );
+    return this.usersService.toPublic(replacement.user);
   }
 
   @UseGuards(JwtAuthGuard)

@@ -1,7 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 
 const UNSAFE_SECRET_PATTERN =
-  /^(change[_-]?me|replace[_-]?me|default|test|test-value|test-secret)$/i;
+  /^(change[_-]?me|replace(?:[_-]?me|[_-]?with)?|placeholder|example|dummy|default|test(?:[_-](?:value|secret))?)(?:$|[_-])/i;
 
 export function isProductionEnv(raw?: string | null): boolean {
   const normalized = String(raw ?? '')
@@ -78,6 +78,18 @@ export function assertRuntimeSecurityConfig(config: ConfigService): void {
 
   if (parseBooleanFlag(config.get<string>('SETUP_ENABLED', 'false'))) {
     throw new Error('SETUP_ENABLED must remain disabled in production');
+  }
+
+  if (
+    parseBooleanFlag(config.get<string>('AUTH_BOOTSTRAP_FIRST_ADMIN', 'false'))
+  ) {
+    throw new Error(
+      'AUTH_BOOTSTRAP_FIRST_ADMIN must remain disabled in production',
+    );
+  }
+
+  if (parseBooleanFlag(config.get<string>('ENABLE_MOCK_PAYMENTS', 'false'))) {
+    throw new Error('ENABLE_MOCK_PAYMENTS must remain disabled in production');
   }
 
   const signatureMode = getWebhookSignatureMode(config);

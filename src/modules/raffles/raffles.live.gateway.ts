@@ -4,7 +4,12 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Server, Socket } from 'socket.io';
@@ -69,6 +74,10 @@ export class RafflesLiveGateway
 
   private readonly logger = new Logger(RafflesLiveGateway.name);
   private readonly viewerIds = new Set<string>();
+  private readonly maxViewers = Math.max(
+    1,
+    Number(process.env.LIVE_DRAW_MAX_CONNECTIONS ?? 1000) || 1000,
+  );
 
   private tickCursor = 0;
   private analysisProgress = 22;
@@ -98,14 +107,18 @@ export class RafflesLiveGateway
   }
 
   async handleConnection(client: Socket) {
+    if (this.viewerIds.size >= this.maxViewers) {
+      client.emit('live_draw:error', { code: 'CAPACITY_REACHED' });
+      client.disconnect(true);
+      return;
+    }
+
     this.viewerIds.add(client.id);
     await this.pushUpdateToClient(client);
-    await this.broadcastUpdate();
   }
 
-  async handleDisconnect(client: Socket) {
+  handleDisconnect(client: Socket) {
     this.viewerIds.delete(client.id);
-    await this.broadcastUpdate();
   }
 
   private async pushUpdateToClient(client: Socket) {
@@ -135,7 +148,11 @@ export class RafflesLiveGateway
     const liveTickets = await this.fetchLiveTickets();
 
     const fallbackCodes = recent
-      .map((w) => String(w.ticketCode ?? '').trim().toUpperCase())
+      .map((w) =>
+        String(w.ticketCode ?? '')
+          .trim()
+          .toUpperCase(),
+      )
       .filter(Boolean);
 
     // Uniquement de vrais codes de tickets (plus de codes factices de remplissage).

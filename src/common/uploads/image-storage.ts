@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { mkdirSync } from 'fs';
-import { join } from 'path';
+import { unlink } from 'fs/promises';
+import { isAbsolute, join, relative, resolve } from 'path';
 import * as crypto from 'crypto';
 import sharp from 'sharp';
 
@@ -46,11 +47,16 @@ export async function storeOptimizedImageFromBuffer(input: {
 
   try {
     const metadata = await image.metadata();
-    const detectedFormat = String(metadata.format ?? '').trim().toLowerCase();
+    const detectedFormat = String(metadata.format ?? '')
+      .trim()
+      .toLowerCase();
     const width = Number(metadata.width ?? 0);
     const height = Number(metadata.height ?? 0);
 
-    if (!detectedFormat || !['jpeg', 'jpg', 'png', 'webp', 'gif'].includes(detectedFormat)) {
+    if (
+      !detectedFormat ||
+      !['jpeg', 'jpg', 'png', 'webp', 'gif'].includes(detectedFormat)
+    ) {
       throw new BadRequestException('Unsupported image content');
     }
 
@@ -119,4 +125,36 @@ export async function storeOptimizedImageFromDataUrl(input: {
     fit: input.fit,
     quality: input.quality,
   });
+}
+
+export async function removeStoredImage(
+  publicPath: string | null | undefined,
+  kind: StoredImageKind,
+): Promise<boolean> {
+  const normalized = String(publicPath ?? '')
+    .trim()
+    .replace(/\\/g, '/');
+  const expectedPrefix = `/uploads/${kind}/`;
+  if (!normalized.startsWith(expectedPrefix)) return false;
+
+  const root = resolve(process.cwd(), 'uploads', kind);
+  const target = resolve(process.cwd(), normalized.replace(/^\/+/, ''));
+  const relativeTarget = relative(root, target);
+  if (
+    !relativeTarget ||
+    isAbsolute(relativeTarget) ||
+    relativeTarget.startsWith('..') ||
+    relativeTarget.includes('/') ||
+    relativeTarget.includes('\\')
+  ) {
+    return false;
+  }
+
+  try {
+    await unlink(target);
+    return true;
+  } catch (error: any) {
+    if (String(error?.code ?? '') === 'ENOENT') return false;
+    throw error;
+  }
 }

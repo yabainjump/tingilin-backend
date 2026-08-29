@@ -43,6 +43,15 @@ export class RafflesPublicService {
     return new Types.ObjectId(id);
   }
 
+  private publicRaffleFilter(_id: Types.ObjectId) {
+    return {
+      _id,
+      status: {
+        $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
+      },
+    };
+  }
+
   async listLive() {
     const now = new Date();
 
@@ -71,32 +80,39 @@ export class RafflesPublicService {
       products.map((p) => [p._id.toString(), p]),
     );
 
-    return raffles.map((r) => {
-      const endAtMs = r.endAt ? new Date(r.endAt).getTime() : null;
-      const remainingMs = endAtMs ? Math.max(0, endAtMs - Date.now()) : null;
+    return raffles
+      .filter((r) => {
+        return !!r.productId && productMap.has(r.productId.toString());
+      })
+      .map((r) => {
+        const endAtMs = r.endAt ? new Date(r.endAt).getTime() : null;
+        const remainingMs = endAtMs ? Math.max(0, endAtMs - Date.now()) : null;
 
-      return {
-        _id: r._id.toString(),
-        status: r.status,
-        ticketPrice: r.ticketPrice,
-        currency: r.currency,
-        startAt: r.startAt,
-        endAt: r.endAt,
-        remainingMs,
-        rules: r.rules,
-        ticketsSold: r.ticketsSold ?? 0,
-        participantsCount: r.participantsCount ?? 0,
-        product: r.productId
-          ? (productMap.get(r.productId.toString()) ?? null)
-          : null,
-      };
-    });
+        return {
+          _id: r._id.toString(),
+          status: r.status,
+          ticketPrice: r.ticketPrice,
+          currency: r.currency,
+          startAt: r.startAt,
+          endAt: r.endAt,
+          remainingMs,
+          rules: r.rules,
+          ticketsSold: r.ticketsSold ?? 0,
+          participantsCount: r.participantsCount ?? 0,
+          product: r.productId
+            ? (productMap.get(r.productId.toString()) ?? null)
+            : null,
+        };
+      });
   }
 
   async getOne(id: string) {
     const _id = this.asObjectId(id);
 
-    const raffle: any = await this.raffleModel.findById(_id).lean().exec();
+    const raffle: any = await this.raffleModel
+      .findOne(this.publicRaffleFilter(_id))
+      .lean()
+      .exec();
     if (!raffle) throw new NotFoundException('Raffle not found');
 
     const product: any = raffle.productId
@@ -106,6 +122,9 @@ export class RafflesPublicService {
           .lean()
           .exec()
       : null;
+    if (!product || String(product.status ?? '') !== 'PUBLISHED') {
+      throw new NotFoundException('Raffle not found');
+    }
     const endAtMs = raffle.endAt ? new Date(raffle.endAt).getTime() : null;
     const remainingMs = endAtMs ? Math.max(0, endAtMs - Date.now()) : null;
 
@@ -128,12 +147,24 @@ export class RafflesPublicService {
     const _id = this.asObjectId(id);
 
     const raffle: any = await this.raffleModel
-      .findById(_id)
-      .select({ status: 1, ticketsSold: 1, participantsCount: 1, endAt: 1 })
+      .findOne(this.publicRaffleFilter(_id))
+      .select({
+        status: 1,
+        ticketsSold: 1,
+        participantsCount: 1,
+        endAt: 1,
+        productId: 1,
+      })
       .lean()
       .exec();
 
     if (!raffle) throw new NotFoundException('Raffle not found');
+    const publishedProduct = raffle.productId
+      ? await this.productModel
+          .exists({ _id: raffle.productId, status: 'PUBLISHED' })
+          .exec()
+      : null;
+    if (!publishedProduct) throw new NotFoundException('Raffle not found');
 
     const endAtMs = raffle.endAt ? new Date(raffle.endAt).getTime() : null;
     const remainingMs = endAtMs ? Math.max(0, endAtMs - Date.now()) : null;
@@ -151,7 +182,10 @@ export class RafflesPublicService {
   async getWinner(id: string) {
     const _id = this.asObjectId(id);
 
-    const raffle: any = await this.raffleModel.findById(_id).lean().exec();
+    const raffle: any = await this.raffleModel
+      .findOne(this.publicRaffleFilter(_id))
+      .lean()
+      .exec();
     if (!raffle) throw new NotFoundException('Raffle not found');
 
     const product: any = raffle.productId
@@ -161,6 +195,9 @@ export class RafflesPublicService {
           .lean()
           .exec()
       : null;
+    if (!product || String(product.status ?? '') !== 'PUBLISHED') {
+      throw new NotFoundException('Raffle not found');
+    }
 
     const isDrawn = raffle.status === 'DRAWN';
 

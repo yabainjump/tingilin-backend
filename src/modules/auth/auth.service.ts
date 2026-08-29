@@ -87,7 +87,6 @@ export class AuthService {
       firstName: dto.firstName,
       lastName: dto.lastName,
       phone,
-      avatar: dto.avatar,
       referredBy,
       role: roleForNewUser,
     });
@@ -96,7 +95,9 @@ export class AuthService {
   }
 
   async adminInviteUser(dto: InviteUserDto) {
-    const email = String(dto.email ?? '').trim().toLowerCase();
+    const email = String(dto.email ?? '')
+      .trim()
+      .toLowerCase();
     const phone = normalizeStoredPhone(dto.phone);
 
     const [existingEmail, existingPhone] = await Promise.all([
@@ -162,7 +163,9 @@ export class AuthService {
       userAgent?: string;
     },
   ) {
-    const normalizedEmail = String(email ?? '').trim().toLowerCase();
+    const normalizedEmail = String(email ?? '')
+      .trim()
+      .toLowerCase();
     const user = await this.usersService.findByEmail(normalizedEmail);
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
@@ -191,16 +194,12 @@ export class AuthService {
     const blockedUntilMs = user.loginBlockedUntil
       ? new Date(user.loginBlockedUntil).getTime()
       : 0;
-    if (blockedUntilMs && blockedUntilMs > now) {
-      const retryAfterSeconds = Math.ceil((blockedUntilMs - now) / 1000);
-      const retryAfterMinutes = Math.ceil(retryAfterSeconds / 60);
-      throw new UnauthorizedException(
-        `Trop de tentatives. Reessaie dans ${retryAfterMinutes} minute(s).`,
-      );
-    }
-
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) {
+      if (blockedUntilMs && blockedUntilMs > now) {
+        throw new UnauthorizedException('Invalid credentials');
+      }
+
       const maxAttempts = Math.max(
         1,
         Number(this.config.get<string>('AUTH_LOGIN_MAX_ATTEMPTS', '5')),
@@ -310,7 +309,9 @@ export class AuthService {
       throw new BadRequestException('Email ou téléphone requis');
     }
 
-    const code = String(dto.code ?? '').replace(/\s+/g, '').trim();
+    const code = String(dto.code ?? '')
+      .replace(/\s+/g, '')
+      .trim();
     const newPassword = String(dto.newPassword ?? '');
 
     if (!code) {
@@ -404,7 +405,8 @@ export class AuthService {
       expiresIn: refreshExpires,
     });
 
-    (user as any).currentRefreshTokenHash = this.hashRefreshToken(refresh_token);
+    (user as any).currentRefreshTokenHash =
+      this.hashRefreshToken(refresh_token);
     (user as any).currentRefreshTokenJti = refreshJti;
     (user as any).currentRefreshTokenIssuedAt = new Date();
     await user.save();
@@ -437,12 +439,20 @@ export class AuthService {
       }
 
       const tokenJti = String(payload?.jti ?? '').trim();
-      if (!tokenJti || tokenJti !== String((user as any)?.currentRefreshTokenJti ?? '')) {
+      if (
+        !tokenJti ||
+        tokenJti !== String((user as any)?.currentRefreshTokenJti ?? '')
+      ) {
         throw new UnauthorizedException('Refresh token revoked');
       }
 
-      const expectedHash = String((user as any)?.currentRefreshTokenHash ?? '').trim();
-      if (!expectedHash || expectedHash !== this.hashRefreshToken(refreshToken)) {
+      const expectedHash = String(
+        (user as any)?.currentRefreshTokenHash ?? '',
+      ).trim();
+      if (
+        !expectedHash ||
+        expectedHash !== this.hashRefreshToken(refreshToken)
+      ) {
         throw new UnauthorizedException('Refresh token revoked');
       }
 
@@ -588,7 +598,10 @@ export class AuthService {
         .trim()
         .toLowerCase() === 'true';
 
-    return enabled && !isProductionEnv(this.config.get<string>('NODE_ENV', 'development'));
+    return (
+      enabled &&
+      !isProductionEnv(this.config.get<string>('NODE_ENV', 'development'))
+    );
   }
 
   private generateResetCode(): string {
@@ -600,7 +613,10 @@ export class AuthService {
   }
 
   private hashResetCode(code: string): string {
-    return crypto.createHash('sha256').update(code).digest('hex');
+    return crypto
+      .createHmac('sha256', this.refreshSecret())
+      .update(`password-reset:${code}`)
+      .digest('hex');
   }
 
   private async sendPasswordResetEmail(
@@ -740,13 +756,15 @@ export class AuthService {
 
     if ((!host && !service) || !user || !pass) {
       this.logger.error(
-        `[SMTP] Configuration incomplete pour l’envoi des emails: ${JSON.stringify({
-          hasHost: Boolean(host),
-          hasService: Boolean(service),
-          hasUser: Boolean(user),
-          hasPass: Boolean(pass),
-          hasMailFrom: Boolean(mailFrom),
-        })}`,
+        `[SMTP] Configuration incomplete pour l’envoi des emails: ${JSON.stringify(
+          {
+            hasHost: Boolean(host),
+            hasService: Boolean(service),
+            hasUser: Boolean(user),
+            hasPass: Boolean(pass),
+            hasMailFrom: Boolean(mailFrom),
+          },
+        )}`,
       );
       return { transporter: null, reason: 'SMTP_CONFIG_MISSING' };
     }

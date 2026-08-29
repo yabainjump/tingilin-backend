@@ -103,6 +103,24 @@ npm run test
 npm run test:e2e
 ```
 
+## Spec Kit
+
+Ce dépôt utilise GitHub Spec Kit `v1.0.1` avec l'intégration Codex. Les principes
+non négociables du backend sont dans `.specify/memory/constitution.md` et les
+skills sont versionnés dans `.agents/skills/`.
+
+Pour une nouvelle fonctionnalité, ouvrir Codex depuis ce dossier puis suivre :
+
+```text
+$speckit-specify → $speckit-clarify → $speckit-plan
+→ $speckit-tasks → $speckit-analyze → $speckit-implement
+→ $speckit-converge
+```
+
+Les spécifications générées sont conservées dans `specs/`. Une évolution qui
+touche aussi l'app ou l'admin doit référencer les specs correspondantes dans
+leurs dépôts respectifs.
+
 ## Deploiement production (Nginx/HAProxy + PM2)
 
 Une stack de deploiement complete est disponible dans `deploy/`:

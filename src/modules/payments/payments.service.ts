@@ -433,7 +433,8 @@ export class PaymentsService {
     const soldTickets = Number(raffle?.ticketsSold ?? 0);
     if (
       totalTickets > 0 &&
-      soldTickets + Math.max(1, Math.floor(Number(quantity) || 1)) > totalTickets
+      soldTickets + Math.max(1, Math.floor(Number(quantity) || 1)) >
+        totalTickets
     ) {
       throw new BadRequestException('No tickets left for this raffle');
     }
@@ -462,6 +463,17 @@ export class PaymentsService {
       }
     }
     return '';
+  }
+
+  private safeHttpsUrl(value: unknown): string {
+    const raw = typeof value === 'string' ? value.trim() : '';
+    if (!raw) return '';
+    try {
+      const parsed = new URL(raw);
+      return parsed.protocol === 'https:' ? parsed.toString() : '';
+    } catch {
+      return '';
+    }
   }
 
   private normalizePhone(input?: string | null): string {
@@ -528,7 +540,10 @@ export class PaymentsService {
     if (!Number.isFinite(remoteAmount) || remoteAmount !== Number(tx.amount)) {
       throw new BadGatewayException('Digikuntz transaction amount mismatch');
     }
-    if (!remoteCurrency || remoteCurrency !== String(tx.currency).toUpperCase()) {
+    if (
+      !remoteCurrency ||
+      remoteCurrency !== String(tx.currency).toUpperCase()
+    ) {
       throw new BadGatewayException('Digikuntz transaction currency mismatch');
     }
   }
@@ -621,12 +636,14 @@ export class PaymentsService {
       payin?.reference,
       payin?.ref,
     );
-    const paymentLink = this.firstNonEmpty(
-      payin?.paymentLink,
-      data?.paymentLink,
-      payin?.payment_url,
-      payin?.url,
-      payin?.link,
+    const paymentLink = this.safeHttpsUrl(
+      this.firstNonEmpty(
+        payin?.paymentLink,
+        data?.paymentLink,
+        payin?.payment_url,
+        payin?.url,
+        payin?.link,
+      ),
     );
     const providerStatus = this.firstNonEmpty(
       payin?.status,
@@ -666,9 +683,7 @@ export class PaymentsService {
       amount: Number(tx.amount),
       reason: this.buildDigikuntzReason(tx),
     });
-    const details = recovered
-      ? this.digikuntzPayinDetails(recovered)
-      : null;
+    const details = recovered ? this.digikuntzPayinDetails(recovered) : null;
     if (!details?.paymentLink) {
       throw new ConflictException(
         'Cette tentative de paiement est encore en cours de récupération. Patiente quelques secondes puis réessaie.',
@@ -769,6 +784,7 @@ export class PaymentsService {
           tx.quantity,
           part.wasCreated ? 1 : 0,
           session,
+          true,
         );
         await this.ticketsService.createMany(
           {
@@ -982,12 +998,14 @@ export class PaymentsService {
         payin?.reference,
         payin?.ref,
       );
-      const paymentLink = this.firstNonEmpty(
-        payin?.paymentLink,
-        payinData?.paymentLink,
-        payin?.payment_url,
-        payin?.url,
-        payin?.link,
+      const paymentLink = this.safeHttpsUrl(
+        this.firstNonEmpty(
+          payin?.paymentLink,
+          payinData?.paymentLink,
+          payin?.payment_url,
+          payin?.url,
+          payin?.link,
+        ),
       );
       const providerStatus = this.firstNonEmpty(
         payin?.status,
@@ -1834,6 +1852,7 @@ export class PaymentsService {
           1,
           part.wasCreated ? 1 : 0,
           session,
+          true,
         );
         await this.ticketsService.createMany(
           {
@@ -1976,8 +1995,7 @@ export class PaymentsService {
       });
       if (recovered) {
         const details = this.digikuntzPayinDetails(recovered);
-        tx.providerTransactionId =
-          details.providerTransactionId || undefined;
+        tx.providerTransactionId = details.providerTransactionId || undefined;
         tx.providerRef = details.providerRef || tx.providerRef;
         tx.paymentLink = details.paymentLink || tx.paymentLink;
         tx.paymentWithTaxes = details.paymentWithTaxes;

@@ -104,17 +104,12 @@ export class RafflesService {
     });
     return Array.from(
       new Set(
-        (ids ?? [])
-          .map((x: any) => String(x ?? '').trim())
-          .filter(Boolean),
+        (ids ?? []).map((x: any) => String(x ?? '').trim()).filter(Boolean),
       ),
     );
   }
 
-  private async notifyDrawStarted(
-    raffle: any,
-    users: string[],
-  ): Promise<void> {
+  private async notifyDrawStarted(raffle: any, users: string[]): Promise<void> {
     if (!users.length) return;
 
     const raffleId = String(raffle?._id ?? '').trim();
@@ -191,8 +186,7 @@ export class RafflesService {
       const remainingMin = Math.ceil((endAt - now) / 60_000);
       if (remainingMin <= 0) continue;
 
-      const windowMin =
-        remainingMin <= 5 ? 5 : remainingMin <= 15 ? 15 : 60;
+      const windowMin = remainingMin <= 5 ? 5 : remainingMin <= 15 ? 15 : 60;
 
       const raffleId = String(raffle?._id ?? '').trim();
       if (!raffleId) continue;
@@ -333,10 +327,15 @@ export class RafflesService {
     }
 
     const r = await this.raffleModel
-      .findById(id)
+      .findOne({
+        _id: id,
+        status: {
+          $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
+        },
+      })
       .populate({
         path: 'productId',
-        select: 'title description imageUrl realValue categoryId',
+        select: 'title description imageUrl categoryId status',
       })
       .lean()
       .exec();
@@ -344,6 +343,9 @@ export class RafflesService {
     if (!r) throw new NotFoundException('Raffle not found');
 
     const p: any = r.productId;
+    if (!p || String(p.status ?? '') !== 'PUBLISHED') {
+      throw new NotFoundException('Raffle not found');
+    }
 
     return {
       id: r._id.toString(),
@@ -351,8 +353,6 @@ export class RafflesService {
       title: p?.title ?? '',
       description: p?.description ?? '',
       imageUrl: p?.imageUrl ?? '',
-      realValue: p?.realValue ?? 0,
-
       ticketPrice: r.ticketPrice,
       currency: r.currency ?? 'XAF',
       sold: r.ticketsSold ?? 0,
@@ -553,7 +553,9 @@ export class RafflesService {
   private parseWinnerStatusFilter(
     raw?: string,
   ): WinnerFulfillmentStatus | null {
-    const value = String(raw ?? 'ALL').trim().toUpperCase();
+    const value = String(raw ?? 'ALL')
+      .trim()
+      .toUpperCase();
     if (!value || value === 'ALL') return null;
 
     const allowed = Object.values(WinnerFulfillmentStatus);
@@ -565,7 +567,9 @@ export class RafflesService {
   }
 
   private parseWinnerStatusInput(raw?: string): WinnerFulfillmentStatus {
-    const value = String(raw ?? '').trim().toUpperCase();
+    const value = String(raw ?? '')
+      .trim()
+      .toUpperCase();
     const allowed = Object.values(WinnerFulfillmentStatus);
 
     if (!allowed.includes(value as WinnerFulfillmentStatus)) {
@@ -782,9 +786,7 @@ export class RafflesService {
     const pendingActions = Number(summary?.pendingActions ?? 0);
     const totalRewardsXaf = Number(summary?.totalRewardsXaf ?? 0);
     const deliveryRate =
-      totalWinners > 0
-        ? Math.round((deliveredCount / totalWinners) * 100)
-        : 0;
+      totalWinners > 0 ? Math.round((deliveredCount / totalWinners) * 100) : 0;
 
     return {
       data: rows.map((row: any) => {
@@ -946,12 +948,27 @@ export class RafflesService {
     ticketsDelta: number,
     participantsDelta: number,
     session?: ClientSession,
+    requirePurchasable = false,
   ) {
     this.ensureObjectId(raffleId, 'Invalid raffleId');
+    const now = new Date();
     const result = await this.raffleModel
       .updateOne(
         {
           _id: raffleId,
+          ...(requirePurchasable
+            ? {
+                status: RaffleStatus.LIVE,
+                $and: [
+                  {
+                    $or: [{ startAt: null }, { startAt: { $lte: now } }],
+                  },
+                  {
+                    $or: [{ endAt: null }, { endAt: { $gt: now } }],
+                  },
+                ],
+              }
+            : {}),
           $expr: {
             $or: [
               { $lte: [{ $ifNull: ['$totalTickets', 0] }, 0] },
@@ -974,7 +991,11 @@ export class RafflesService {
       )
       .exec();
     if (result.modifiedCount !== 1) {
-      throw new ConflictException('Not enough tickets left for this raffle');
+      throw new ConflictException(
+        requirePurchasable
+          ? 'Raffle is closed or has no tickets left'
+          : 'Not enough tickets left for this raffle',
+      );
     }
     return result;
   }
@@ -1093,11 +1114,23 @@ export class RafflesService {
     this.ensureObjectId(raffleId, 'Invalid raffleId');
 
     const raffle: any = await this.raffleModel
-      .findById(raffleId)
+      .findOne({
+        _id: raffleId,
+        status: {
+          $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
+        },
+      })
+      .populate({
+        path: 'productId',
+        select: 'status',
+        match: { status: 'PUBLISHED' },
+      })
       .select('+drawServerSeed')
       .lean()
       .exec();
-    if (!raffle) throw new NotFoundException('Raffle not found');
+    if (!raffle || !raffle.productId) {
+      throw new NotFoundException('Raffle not found');
+    }
 
     const base = {
       raffleId: String(raffle._id),
@@ -1163,9 +1196,7 @@ export class RafflesService {
         revealedAt: proof.revealedAt ?? raffle.drawnAt ?? null,
         drawnAt: raffle.drawnAt ?? null,
         winningTicketSerial,
-        winnerUserId: raffle.winnerUserId
-          ? String(raffle.winnerUserId)
-          : null,
+        winnerUserId: raffle.winnerUserId ? String(raffle.winnerUserId) : null,
         orderedSerials,
       },
       verified: verification.valid,
@@ -1257,19 +1288,31 @@ export class RafflesService {
         deepLink: `/tabs/ticket-details/${String(raffle._id)}`,
       },
     });
-    await this.notifyDrawResults(claimed, String(ticket.userId), participantIds);
+    await this.notifyDrawResults(
+      claimed,
+      String(ticket.userId),
+      participantIds,
+    );
 
     return { claimed: true, doc: claimed };
   }
 
   private async pickRandomActiveTicket(
     raffleId: Types.ObjectId | string,
-  ): Promise<{ _id: Types.ObjectId; userId: Types.ObjectId; serial?: string | null } | null> {
+  ): Promise<{
+    _id: Types.ObjectId;
+    userId: Types.ObjectId;
+    serial?: string | null;
+  } | null> {
     const rid =
       typeof raffleId === 'string' ? new Types.ObjectId(raffleId) : raffleId;
 
     const [ticket] = await this.ticketModel
-      .aggregate<{ _id: Types.ObjectId; userId: Types.ObjectId; serial?: string | null }>([
+      .aggregate<{
+        _id: Types.ObjectId;
+        userId: Types.ObjectId;
+        serial?: string | null;
+      }>([
         { $match: { raffleId: rid, status: 'ACTIVE' } },
         { $sample: { size: 1 } },
         { $project: { _id: 1, userId: 1, serial: 1 } },
@@ -1342,8 +1385,9 @@ export class RafflesService {
     }
 
     const categoryId =
-      String(dto.product.categoryId ?? 'GENERAL').trim().toUpperCase() ||
-      'GENERAL';
+      String(dto.product.categoryId ?? 'GENERAL')
+        .trim()
+        .toUpperCase() || 'GENERAL';
     const imageUrlRaw = String(dto.product.imageUrl ?? '').trim();
     const imageUrl = imageUrlRaw.startsWith('data:')
       ? await storeOptimizedImageFromDataUrl({
@@ -1469,7 +1513,15 @@ export class RafflesService {
       throw new BadRequestException('Invalid id');
     }
 
-    const r = await this.raffleModel.findById(id).lean().exec();
+    const r = await this.raffleModel
+      .findOne({
+        _id: id,
+        status: {
+          $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
+        },
+      })
+      .lean()
+      .exec();
     if (!r) throw new NotFoundException('Raffle not found');
     return r;
   }
@@ -1478,10 +1530,17 @@ export class RafflesService {
     const now = new Date();
     const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
     const minEndAt = new Date(Date.now() - sevenDaysMs);
+    const publishedProductIds = await this.productModel
+      .distinct('_id', { status: 'PUBLISHED' })
+      .exec();
 
     const q: any = {
+      status: {
+        $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
+      },
+      productId: { $in: publishedProductIds },
       endAt: { $gte: minEndAt },
-      $or: [{ startAt: { $exists: false } }, { startAt: { $lte: now } }],
+      $or: [{ startAt: null }, { startAt: { $lte: now } }],
     };
 
     return this.raffleModel.find(q).sort({ endAt: 1 }).lean().exec();
@@ -1581,11 +1640,22 @@ export class RafflesService {
     this.ensureObjectId(raffleId, 'Invalid raffleId');
 
     const raffle: any = await this.raffleModel
-      .findById(raffleId)
-      .populate('productId', 'title imageUrl')
+      .findOne({
+        _id: raffleId,
+        status: {
+          $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
+        },
+      })
+      .populate({
+        path: 'productId',
+        select: 'title imageUrl status',
+        match: { status: 'PUBLISHED' },
+      })
       .exec();
 
-    if (!raffle) throw new NotFoundException('Raffle not found');
+    if (!raffle || !raffle.productId) {
+      throw new NotFoundException('Raffle not found');
+    }
 
     const winnerObj = raffle.winner || null;
 
@@ -1642,7 +1712,11 @@ export class RafflesService {
 
     const raffles: any[] = await this.raffleModel
       .find({ status: RaffleStatus.DRAWN, 'winner.isPublished': true })
-      .populate('productId', 'title imageUrl')
+      .populate({
+        path: 'productId',
+        select: 'title imageUrl status',
+        match: { status: 'PUBLISHED' },
+      })
       .sort({ 'winner.drawnAt': -1 })
       .limit(n)
       .lean()
@@ -1653,7 +1727,7 @@ export class RafflesService {
     for (let i = 0; i < raffles.length; i++) {
       const r = raffles[i];
       const w = r.winner;
-      if (!w) continue;
+      if (!w || !r.productId) continue;
 
       const [ticket, user] = await Promise.all([
         this.ticketModel.findById(w.ticketId).select('serial').lean().exec(),
@@ -1661,7 +1735,7 @@ export class RafflesService {
           .findById(w.userId)
           .select(
             'username firstName lastName name fullName avatar avatarUrl photo photoUrl',
-          )          
+          )
           .lean()
           .exec(),
       ]);

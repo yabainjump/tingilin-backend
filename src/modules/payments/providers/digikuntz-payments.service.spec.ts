@@ -88,6 +88,35 @@ describe('DigikuntzPaymentsService', () => {
     });
   });
 
+  it('removes insecure checkout aliases from nested response data', async () => {
+    const { service, post } = createService();
+    post.mockReturnValue(
+      of({
+        data: {
+          id: 'provider-id',
+          status: 'payin_pending',
+          data: {
+            paymentLink: 'http://checkout.example.com/pay/test',
+            payment_url: 'http://checkout.example.com/pay/alias',
+          },
+        },
+      } as AxiosResponse),
+    );
+
+    const result = await service.createPayin({
+      amount: 100,
+      reason: 'Tingilin payment ABC123 x1',
+      userEmail: 'user@example.com',
+      userPhone: '691224472',
+      userCountry: 'Cameroon',
+      senderName: 'Test User',
+    });
+
+    expect(result.paymentLink).toBeUndefined();
+    expect(result.data?.paymentLink).toBeUndefined();
+    expect(result.data?.payment_url).toBeUndefined();
+  });
+
   it('uses the documented transaction lookup endpoint', async () => {
     const { service, get } = createService();
     get.mockReturnValue(
@@ -167,6 +196,29 @@ describe('DigikuntzPaymentsService', () => {
     const result = await service.createPayin({
       amount: 100,
       reason: 'Test unsafe link',
+      userEmail: 'user@example.com',
+      userPhone: '691224472',
+      userCountry: 'Cameroon',
+      senderName: 'Test User',
+    });
+
+    expect(result.paymentLink).toBeUndefined();
+  });
+
+  it('rejects an insecure HTTP payment link returned by the provider', async () => {
+    const { service, post } = createService();
+    post.mockReturnValue(
+      of({
+        data: {
+          id: 'provider-id',
+          paymentLink: 'http://checkout.example.com/pay/insecure',
+        },
+      } as AxiosResponse),
+    );
+
+    const result = await service.createPayin({
+      amount: 100,
+      reason: 'Test insecure link',
       userEmail: 'user@example.com',
       userPhone: '691224472',
       userCountry: 'Cameroon',
@@ -385,7 +437,10 @@ describe('DigikuntzPaymentsService', () => {
       } as AxiosResponse),
     );
     get.mockReturnValue(
-      of({ data: { data: [] }, headers: { 'content-type': 'application/json' } } as AxiosResponse),
+      of({
+        data: { data: [] },
+        headers: { 'content-type': 'application/json' },
+      } as AxiosResponse),
     );
 
     await expect(

@@ -3,7 +3,9 @@ services:
     image: mongo:7
     container_name: tingilin-mongo
     ports:
-      - "27017:27017"
+      # Development-only access from this host. Never expose unauthenticated
+      # MongoDB on every network interface.
+      - "127.0.0.1:27017:27017"
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - tingilin_mongo_data:/data/db

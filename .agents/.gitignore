@@ -1,0 +1,5 @@
+# Track the project skills, ignore any future machine-local agent state.
+*
+!.gitignore
+!skills/
+!skills/**
