@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
+import { CAMEROON_REGIONS } from '../../../common/regions';
 
 export type UserDocument = HydratedDocument<User>;
 
@@ -38,8 +39,11 @@ export class User {
   @Prop({ required: true })
   lastName!: string;
 
-  @Prop({ required: true, unique: true, index: true })
-  phone!: string;
+  // Optionnel: les comptes crees via Google n'ont pas encore de telephone.
+  // L'unicite est sparse (index schema ci-dessous) pour autoriser plusieurs
+  // comptes sans telephone.
+  @Prop({ type: String, default: null })
+  phone?: string | null;
 
   @Prop({ unique: true, sparse: true, uppercase: true, trim: true })
   referralCode!: string;
@@ -49,6 +53,11 @@ export class User {
 
   @Prop({ type: Boolean, default: false })
   referralQualified!: boolean;
+
+  // Region camerounaise de l'utilisateur (Centre, Littoral, Ouest, Sud-Ouest).
+  // Utilisee pour personnaliser le feed des tombolas.
+  @Prop({ type: String, enum: [...CAMEROON_REGIONS, null], default: null })
+  region?: string | null;
 
   @Prop({ type: Date, default: null })
   referralQualifiedAt?: Date | null;
@@ -122,6 +131,9 @@ export class User {
 
 export const UserSchema = SchemaFactory.createForClass(User);
 
+// Sparse: plusieurs comptes Google sans telephone sont autorises.
+// La migration de deploy remplace l'ancien index phone_1 non-sparse.
+UserSchema.index({ phone: 1 }, { unique: true, sparse: true });
 UserSchema.index({ referredBy: 1, createdAt: -1 });
 UserSchema.index({ role: 1, status: 1 });
 UserSchema.index({ createdAt: -1 });

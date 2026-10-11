@@ -18,6 +18,36 @@ async function migratePaymentIndexes() {
     mongoose.connection.collection('tickets'),
     console.log,
   );
+  await migrateUserIndexes(mongoose.connection, console.log);
+}
+
+/**
+ * Le champ phone est devenu optionnel (comptes Google sans telephone).
+ * L'ancien index phone_1 unique non-sparse doit etre remplace par une
+ * version sparse pour autoriser plusieurs comptes sans telephone.
+ */
+async function migrateUserIndexes(
+  connection: mongoose.Connection,
+  log: (msg: string) => void,
+) {
+  const users = connection.collection('users');
+
+  const existing = await users.indexes();
+  const phoneIndex = existing.find((idx) => idx.name === 'phone_1');
+  if (phoneIndex && !phoneIndex.sparse) {
+    try {
+      await users.dropIndex('phone_1');
+      log('Dropped legacy unique non-sparse index phone_1');
+    } catch (error) {
+      log(`Could not drop phone_1 (continuing): ${String(error)}`);
+    }
+  }
+
+  await users.createIndex(
+    { phone: 1 },
+    { unique: true, sparse: true, name: 'phone_1' },
+  );
+  log('User phone sparse unique index ensured');
 }
 
 migratePaymentIndexes()

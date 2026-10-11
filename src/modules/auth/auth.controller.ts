@@ -14,6 +14,7 @@ import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { GoogleAuthDto } from './dto/google-auth.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
@@ -49,6 +50,17 @@ export class AuthController {
       ip: req.ip,
       userAgent: req.headers?.['user-agent'],
     });
+    return this.presentTokens(tokens, req, res);
+  }
+
+  @Post('google')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async google(
+    @Body() dto: GoogleAuthDto,
+    @Req() req: any,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const tokens = await this.authService.loginWithGoogle(dto);
     return this.presentTokens(tokens, req, res);
   }
 

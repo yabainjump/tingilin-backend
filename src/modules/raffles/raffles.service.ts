@@ -32,6 +32,7 @@ import {
 } from '../participations/schemas/participation.schema';
 import { NotificationsService } from '../notifications/notifications.service';
 import { storeOptimizedImageFromDataUrl } from '../../common/uploads/image-storage';
+import { normalizeRegion } from '../../common/regions';
 import {
   PROVABLY_FAIR_ALGORITHM,
   PROVABLY_FAIR_FORMULA,
@@ -239,12 +240,14 @@ export class RafflesService {
     limit?: number;
     sort?: 'endAt' | 'createdAt';
     category?: string;
+    region?: string;
   }) {
     const limit = Math.min(Math.max(Number(opts?.limit ?? 30), 1), 100);
     const now = new Date();
     const category = String(opts?.category ?? '')
       .trim()
       .toUpperCase();
+    const region = normalizeRegion(opts?.region);
 
     const sort =
       opts?.sort === 'endAt' ? { endAt: 1, createdAt: -1 } : { createdAt: -1 };
@@ -278,6 +281,40 @@ export class RafflesService {
       (match as any).productId = {
         $in: productIds.map((row: any) => row._id),
       };
+    }
+
+    // Personnalisation regionale: l'utilisateur ne voit que les tombolas de sa
+    // region (les produits sans region -- historiques -- restent visibles).
+    if (region) {
+      const regionalProductIds = await this.productModel
+        .find({
+          $or: [{ region }, { region: { $in: [null, ''] } }],
+        })
+        .select('_id')
+        .lean()
+        .exec();
+
+      if (!regionalProductIds.length) {
+        return [];
+      }
+
+      const regionalIdSet = new Set(
+        regionalProductIds.map((row: any) => String(row._id)),
+      );
+      const existingFilter = (match as any).productId?.$in as
+        | any[]
+        | undefined;
+      if (existingFilter) {
+        const filtered = existingFilter.filter((id: any) =>
+          regionalIdSet.has(String(id)),
+        );
+        if (!filtered.length) return [];
+        (match as any).productId = { $in: filtered };
+      } else {
+        (match as any).productId = {
+          $in: regionalProductIds.map((row: any) => row._id),
+        };
+      }
     }
 
     const raffles = await this.raffleModel
@@ -315,6 +352,7 @@ export class RafflesService {
         subtitle: p.description ?? '',
         imageUrl: p.imageUrl ?? '',
         categoryId: String(p.categoryId ?? ''),
+        region: String(p.region ?? ''),
         status: r.status ?? RaffleStatus.LIVE,
         sold: r.ticketsSold ?? 0,
         total: r.totalTickets ?? 0,
@@ -329,14 +367,15 @@ export class RafflesService {
     });
   }
 
-  async getHomeFeed(opts?: { category?: string }) {
+  async getHomeFeed(opts?: { category?: string; region?: string }) {
     const category = String(opts?.category ?? '')
       .trim()
       .toUpperCase();
+    const region = normalizeRegion(opts?.region) ?? undefined;
 
     const [endingSoon, liveRows] = await Promise.all([
-      this.listPublic({ limit: 10, sort: 'endAt', category }),
-      this.listPublic({ limit: 30, sort: 'createdAt', category }),
+      this.listPublic({ limit: 10, sort: 'endAt', category, region }),
+      this.listPublic({ limit: 30, sort: 'createdAt', category, region }),
     ]);
 
     return { endingSoon, liveRows };
@@ -451,7 +490,7 @@ export class RafflesService {
         } as any,
         { new: true },
       )
-      .populate('productId', 'title realValue imageUrl')
+      .populate('productId', 'title realValue imageUrl region')
       .exec();
 
     if (!updated) throw new NotFoundException('Raffle not found');
@@ -512,7 +551,7 @@ export class RafflesService {
   async adminListAll() {
     const raffles: any[] = await this.raffleModel
       .find()
-      .populate('productId', 'title realValue imageUrl')
+      .populate('productId', 'title realValue imageUrl region')
       .sort({ createdAt: -1 })
       .lean()
       .exec();
@@ -524,7 +563,7 @@ export class RafflesService {
     this.ensureObjectId(id);
     const r = await this.raffleModel
       .findById(id)
-      .populate('productId', 'title realValue imageUrl')
+      .populate('productId', 'title realValue imageUrl region')
       .lean()
       .exec();
     if (!r) throw new NotFoundException('Raffle not found');
@@ -1409,6 +1448,7 @@ export class RafflesService {
       String(dto.product.categoryId ?? 'GENERAL')
         .trim()
         .toUpperCase() || 'GENERAL';
+    const productRegion = normalizeRegion(dto.product.region) ?? '';
     const imageUrlRaw = String(dto.product.imageUrl ?? '').trim();
     const imageUrl = imageUrlRaw.startsWith('data:')
       ? await storeOptimizedImageFromDataUrl({
@@ -1437,6 +1477,7 @@ export class RafflesService {
             description: dto.product.description ?? '',
             imageUrl,
             categoryId,
+            region: productRegion,
             realValue: dto.product.realValue ?? 0,
             createdBy: new Types.ObjectId(createdBy),
           },

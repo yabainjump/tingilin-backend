@@ -87,11 +87,126 @@ export class AuthService {
       firstName: dto.firstName,
       lastName: dto.lastName,
       phone,
+      region: dto.region ?? null,
       referredBy,
       role: roleForNewUser,
     });
 
     return this.issueTokens(user);
+  }
+
+  /**
+   * Connexion/inscription via Google. Le idToken (JWT) produit par le SDK
+   * Google est verifie cote serveur (audience + signature via l'endpoint
+   * officiel tokeninfo) AVANT toute creation de compte.
+   */
+  async loginWithGoogle(dto: {
+    idToken: string;
+    region?: string;
+    referralCode?: string;
+  }) {
+    const profile = await this.verifyGoogleIdToken(dto.idToken);
+
+    const email = String(profile.email ?? '').trim().toLowerCase();
+    if (!email) throw new UnauthorizedException('Google account has no email');
+
+    let user = await this.usersService.findByEmail(email);
+
+    if (!user) {
+      const fullName = String(profile.name ?? '').trim();
+      const parts = fullName.split(/\s+/).filter(Boolean);
+      const firstName =
+        String(profile.given_name ?? '').trim() || parts[0] || 'Utilisateur';
+      const lastName =
+        String(profile.family_name ?? '').trim() ||
+        parts.slice(1).join(' ') ||
+        firstName;
+
+      let referredBy: string | null = null;
+      const referralCode = String(dto.referralCode ?? '')
+        .trim()
+        .toUpperCase();
+      if (referralCode) {
+        const inviter = await this.usersService.findByReferralCode(referralCode);
+        if (inviter && inviter.email?.toLowerCase() !== email) {
+          referredBy = inviter._id.toString();
+        }
+      }
+
+      // Mot de passe aleatoire non devinable: le compte Google ne se connecte
+      // jamais par mot de passe (reset email reste disponible si besoin).
+      const passwordHash = await this.hashPassword(
+        crypto.randomBytes(24).toString('base64url'),
+      );
+
+      const picture = String(profile.picture ?? '').trim();
+      user = await this.usersService.createUser({
+        email,
+        passwordHash,
+        firstName,
+        lastName,
+        phone: '',
+        avatar: picture.startsWith('https://') ? picture : undefined,
+        region: dto.region ?? null,
+        referredBy,
+        role: undefined,
+      });
+    } else if (String(user.status ?? 'ACTIVE').toUpperCase() !== 'ACTIVE') {
+      throw new UnauthorizedException('Account suspended');
+    }
+
+    await this.auditService.safeLog({
+      action: 'AUTH_GOOGLE_LOGIN',
+      actorUserId: user._id.toString(),
+      actorEmail: user.email,
+      actorRole: user.role,
+      targetType: 'USER',
+      targetId: user._id.toString(),
+      metadata: { success: true, provider: 'google' },
+    });
+
+    return this.issueTokens(user);
+  }
+
+  private async verifyGoogleIdToken(
+    idToken: string,
+  ): Promise<Record<string, any>> {
+    const clientId = String(this.config.get<string>('GOOGLE_CLIENT_ID') ?? '').trim();
+    if (!clientId) {
+      throw new BadRequestException('Google sign-in is not configured');
+    }
+
+    let data: Record<string, any>;
+    try {
+      const res = await fetch(
+        `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`,
+      );
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      data = (await res.json()) as Record<string, any>;
+    } catch {
+      throw new UnauthorizedException('Invalid Google token');
+    }
+
+    const audience = String(data?.aud ?? '');
+    const issuer = String(data?.iss ?? '');
+    const emailVerified =
+      data?.email_verified === true || data?.email_verified === 'true';
+    const expiresAtMs = Number(data?.exp ?? 0) * 1000;
+
+    if (audience !== clientId) {
+      throw new UnauthorizedException('Google token audience mismatch');
+    }
+    if (!['accounts.google.com', 'https://accounts.google.com'].includes(issuer)) {
+      throw new UnauthorizedException('Google token issuer mismatch');
+    }
+    if (!emailVerified) {
+      throw new UnauthorizedException('Google email not verified');
+    }
+    if (!Number.isFinite(expiresAtMs) || expiresAtMs < Date.now()) {
+      throw new UnauthorizedException('Google token expired');
+    }
+
+    return data;
   }
 
   async adminInviteUser(dto: InviteUserDto) {

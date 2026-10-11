@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   IsBoolean,
   IsDateString,
+  IsIn,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -9,6 +10,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { CAMEROON_REGIONS } from '../../../common/regions';
 
 export class AdminCreateProductDto {
   @IsString()
@@ -26,6 +28,10 @@ export class AdminCreateProductDto {
   @IsString()
   @IsOptional()
   categoryId?: string;
+
+  @IsOptional()
+  @IsIn(CAMEROON_REGIONS as unknown as string[])
+  region?: string;
 
   @IsNumber()
   @IsOptional()

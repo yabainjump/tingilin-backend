@@ -37,8 +37,11 @@ export class RafflesController {
   }
 
   @Get('home-feed')
-  homeFeed(@Query('category') category?: string) {
-    return this.rafflesService.getHomeFeed({ category });
+  homeFeed(
+    @Query('category') category?: string,
+    @Query('region') region?: string,
+  ) {
+    return this.rafflesService.getHomeFeed({ category, region });
   }
 
   @Get('live')
@@ -51,10 +54,11 @@ export class RafflesController {
     @Query('limit') limit?: string,
     @Query('sort') sort?: 'endAt' | 'createdAt',
     @Query('category') category?: string,
+    @Query('region') region?: string,
   ) {
     const n = Math.min(Math.max(parseInt(limit ?? '30', 10) || 30, 1), 100);
     const s = sort === 'endAt' ? 'endAt' : 'createdAt';
-    return this.rafflesService.listPublic({ limit: n, sort: s, category });
+    return this.rafflesService.listPublic({ limit: n, sort: s, category, region });
   }
 
   @Post('admin/create-with-product')

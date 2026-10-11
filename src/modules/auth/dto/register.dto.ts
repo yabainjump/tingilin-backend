@@ -5,7 +5,9 @@ import {
   Matches,
   MinLength,
   IsOptional,
+  IsIn,
 } from 'class-validator';
+import { CAMEROON_REGIONS } from '../../../common/regions';
 
 export class RegisterDto {
   @IsEmail()
@@ -50,4 +52,8 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   referralCode?: string;
+
+  @IsOptional()
+  @IsIn(CAMEROON_REGIONS as unknown as string[])
+  region?: string;
 }

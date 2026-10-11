@@ -34,6 +34,11 @@ export class Product {
   createdBy: Types.ObjectId;
 
   @Prop({ required: true }) categoryId: string;
+
+  // Region de diffusion de la tombola (Centre, Littoral, Ouest, Sud-Ouest).
+  // '' = historique/avalable partout.
+  @Prop({ type: String, default: '' })
+  region?: string;
 }
 
 export const ProductSchema = SchemaFactory.createForClass(Product);

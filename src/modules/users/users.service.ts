@@ -92,7 +92,8 @@ export class UsersService {
         String((user as any).username ?? '').trim() || user.email.split('@')[0],
       firstName: user.firstName,
       lastName: user.lastName,
-      phone: user.phone,
+      phone: user.phone ?? null,
+      region: (user as any).region ?? null,
       role: user.role,
       status: user.status,
       avatar: this.normalizeAvatar(user.avatar),
@@ -110,6 +111,7 @@ export class UsersService {
     if (dto.firstName !== undefined) $set.firstName = dto.firstName.trim();
     if (dto.lastName !== undefined) $set.lastName = dto.lastName.trim();
     if (dto.phone !== undefined) $set.phone = normalizeStoredPhone(dto.phone);
+    if (dto.region !== undefined) $set.region = dto.region;
 
     const updated = await this.userModel
       .findByIdAndUpdate(id, { $set }, { new: true })
@@ -149,6 +151,7 @@ export class UsersService {
     role?: UserRole;
     username?: string;
     avatar?: string;
+    region?: string | null;
     referredBy?: string | null;
   }) {
     const email = params.email.trim().toLowerCase();
@@ -167,8 +170,11 @@ export class UsersService {
         passwordHash: params.passwordHash,
         firstName,
         lastName,
-        phone,
+        // Les comptes Google (sans telephone) omettent le champ: l'index
+        // sparse unique sur phone ne doit pas indexer leur absence.
+        ...(phone ? { phone } : {}),
         avatar: this.normalizeAvatar(params.avatar),
+        region: params.region ?? null,
         role: params.role ?? 'USER',
         referralCode,
         referredBy:
@@ -447,7 +453,8 @@ export class UsersService {
         String((u as any).username ?? '').trim() || u.email.split('@')[0],
       firstName: u.firstName,
       lastName: u.lastName,
-      phone: u.phone,
+      phone: u.phone ?? null,
+      region: (u as any).region ?? null,
       role: u.role,
       avatar: this.normalizeAvatar(u.avatar),
       profile: u.profile ?? {},
