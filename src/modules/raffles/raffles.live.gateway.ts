@@ -5,6 +5,7 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import {
+  Inject,
   Injectable,
   Logger,
   OnModuleDestroy,
@@ -13,6 +14,9 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Server, Socket } from 'socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
+import type Redis from 'ioredis';
+import { REDIS_CLIENT } from '../../common/redis/redis.module';
 import { RafflesService } from './raffles.service';
 import { Raffle, RaffleDocument, RaffleStatus } from './schemas/raffle.schema';
 import { Ticket, TicketDocument } from '../tickets/schemas/ticket.schema';
@@ -76,8 +80,11 @@ export class RafflesLiveGateway
   private readonly viewerIds = new Set<string>();
   private readonly maxViewers = Math.max(
     1,
-    Number(process.env.LIVE_DRAW_MAX_CONNECTIONS ?? 1000) || 1000,
+    Number(process.env.LIVE_DRAW_MAX_CONNECTIONS ?? 5000) || 5000,
   );
+  private readonly viewersRedisKey = 'tinguilin:live:viewers';
+  private readonly broadcastLockKey = 'tinguilin:live:broadcast:lock';
+  private redisAdapterReady = false;
 
   private tickCursor = 0;
   private analysisProgress = 22;
@@ -91,9 +98,26 @@ export class RafflesLiveGateway
     @InjectModel(Ticket.name)
     private readonly ticketModel: Model<TicketDocument>,
     private readonly rafflesService: RafflesService,
+    @Inject(REDIS_CLIENT) private readonly redisClient: Redis | null,
   ) {}
 
   onModuleInit() {
+    // Multi-instance: l'adapter Redis propage les broadcasts a tous les
+    // processus. Sans REDIS_URL, on reste en mode 1 instance (fallback local).
+    if (this.redisClient) {
+      try {
+        const pubClient = this.redisClient.duplicate();
+        const subClient = this.redisClient.duplicate();
+        this.server.adapter(createAdapter(pubClient, subClient));
+        this.redisAdapterReady = true;
+        this.logger.log('Socket.IO Redis adapter enabled (multi-instance ready)');
+      } catch (error) {
+        this.logger.error(
+          `Redis adapter init failed, falling back to single-instance mode: ${String(error)}`,
+        );
+      }
+    }
+
     this.timer = setInterval(() => {
       void this.broadcastUpdate();
     }, 3000);
@@ -107,7 +131,19 @@ export class RafflesLiveGateway
   }
 
   async handleConnection(client: Socket) {
-    if (this.viewerIds.size >= this.maxViewers) {
+    if (this.redisClient && this.redisAdapterReady) {
+      try {
+        const globalViewers = await this.currentViewerCount();
+        if (globalViewers >= this.maxViewers) {
+          client.emit('live_draw:error', { code: 'CAPACITY_REACHED' });
+          client.disconnect(true);
+          return;
+        }
+        await this.redisClient.incr(this.viewersRedisKey);
+      } catch {
+        // Redis indisponible: on retombe sur le compteur local.
+      }
+    } else if (this.viewerIds.size >= this.maxViewers) {
       client.emit('live_draw:error', { code: 'CAPACITY_REACHED' });
       client.disconnect(true);
       return;
@@ -118,7 +154,35 @@ export class RafflesLiveGateway
   }
 
   handleDisconnect(client: Socket) {
-    this.viewerIds.delete(client.id);
+    if (!this.viewerIds.delete(client.id)) {
+      return;
+    }
+
+    if (this.redisClient && this.redisAdapterReady) {
+      // Lua: DECR mais jamais negatif (protection apres redemarrage/flush).
+      void this.redisClient
+        .eval(
+          `local v = redis.call('DECRBY', KEYS[1], 1)
+if v < 0 then redis.call('SET', KEYS[1], 0) v = 0 end
+return v`,
+          1,
+          this.viewersRedisKey,
+        )
+        .catch(() => undefined);
+    }
+  }
+
+  private async currentViewerCount(): Promise<number> {
+    if (this.redisClient && this.redisAdapterReady) {
+      try {
+        const raw = await this.redisClient.get(this.viewersRedisKey);
+        const parsed = Number(raw ?? 0);
+        if (Number.isFinite(parsed) && parsed > 0) return parsed;
+      } catch {
+        // ignore, fallback local
+      }
+    }
+    return this.viewerIds.size;
   }
 
   private async pushUpdateToClient(client: Socket) {
@@ -131,8 +195,25 @@ export class RafflesLiveGateway
   }
 
   private async broadcastUpdate() {
-    if (this.viewerIds.size === 0) {
-      return;
+    // En mode multi-instance, un seul processus diffuse a chaque tick (verrou
+    // Redis NX) sinon le payload serait emis N fois vers tous les clients.
+    if (!this.redisClient || !this.redisAdapterReady) {
+      if (this.viewerIds.size === 0) return;
+    }
+
+    if (this.redisClient && this.redisAdapterReady) {
+      try {
+        const isLeader = await this.redisClient.set(
+          this.broadcastLockKey,
+          '1',
+          'PX',
+          2500,
+          'NX',
+        );
+        if (!isLeader) return;
+      } catch {
+        // Redis indisponible: on diffuse quand meme (mode degrade).
+      }
     }
 
     try {
@@ -172,7 +253,7 @@ export class RafflesLiveGateway
       this.analysisProgress >= 82 ? 'VERIFYING...' : 'SCANNING...';
 
     return {
-      viewersLive: this.viewerIds.size,
+      viewersLive: await this.currentViewerCount(),
       provablyFair: true,
       analysisProgress: this.analysisProgress,
       analysisLabel,

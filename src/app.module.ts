@@ -23,6 +23,9 @@ import {
   assertRuntimeSecurityConfig,
   parseBooleanFlag,
 } from './common/config/runtime-security';
+import { RedisModule, REDIS_CLIENT } from './common/redis/redis.module';
+import { RedisThrottlerStorage } from './common/throttling/redis-throttler.storage';
+import type Redis from 'ioredis';
 
 const customDnsServers = String(process.env.DNS_SERVERS ?? '')
   .split(',')
@@ -73,8 +76,19 @@ if (customDnsServers.length > 0) {
             config.get<string>('MONGO_HEARTBEAT_FREQUENCY_MS'),
             10000,
           ),
-          maxPoolSize: parseInteger(config.get<string>('MONGO_MAX_POOL_SIZE'), 20),
-          minPoolSize: parseInteger(config.get<string>('MONGO_MIN_POOL_SIZE'), 1),
+          maxPoolSize: parseInteger(
+            config.get<string>('MONGO_MAX_POOL_SIZE'),
+            100,
+          ),
+          minPoolSize: parseInteger(config.get<string>('MONGO_MIN_POOL_SIZE'), 5),
+          waitQueueTimeoutMS: parseInteger(
+            config.get<string>('MONGO_WAIT_QUEUE_TIMEOUT_MS'),
+            10000,
+          ),
+          maxIdleTimeMS: parseInteger(
+            config.get<string>('MONGO_MAX_IDLE_TIME_MS'),
+            120000,
+          ),
           retryWrites: parseBooleanFlag(
             String(config.get<string>('MONGO_RETRY_WRITES') ?? 'true'),
             true,
@@ -105,7 +119,16 @@ if (customDnsServers.length > 0) {
         };
       },
     }),
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
+    ThrottlerModule.forRootAsync({
+      imports: [RedisModule],
+      inject: [REDIS_CLIENT],
+      useFactory: (redisClient: Redis | null) => ({
+        throttlers: [{ ttl: 60_000, limit: 120 }],
+        ...(redisClient
+          ? { storage: new RedisThrottlerStorage(redisClient) }
+          : {}),
+      }),
+    }),
     UsersModule,
     AuthModule,
     ProductsModule,

@@ -47,16 +47,33 @@ export class NotificationsService {
       'data.dedupeKey': key,
     };
 
-    const existing = await this.notifModel.findOne(q).lean().exec();
-    if (existing) return existing as any;
-
-    return this.create({
-      userId: input.userId,
-      type: input.type,
-      title: input.title,
-      body: input.body,
-      data: { ...(input.data ?? {}), dedupeKey: key },
-    });
+    // Upsert atomique (au lieu de findOne puis create): elimine la race qui
+    // creait des doublons quand cron multi-instance ou webhooks concurrents.
+    try {
+      return await this.notifModel
+        .findOneAndUpdate(
+          q,
+          {
+            $setOnInsert: {
+              userId: input.userId,
+              type: input.type,
+              title: input.title,
+              body: input.body,
+              data: { ...(input.data ?? {}), dedupeKey: key },
+              readAt: null,
+            },
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true },
+        )
+        .exec();
+    } catch (error: any) {
+      if (Number(error?.code ?? 0) === 11000) {
+        // Un concurrent a insere la meme notification: idempotent.
+        const existing = await this.notifModel.findOne(q).lean().exec();
+        if (existing) return existing as any;
+      }
+      throw error;
+    }
   }
 
   async myNotifications(

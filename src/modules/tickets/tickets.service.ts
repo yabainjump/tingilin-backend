@@ -11,11 +11,23 @@ export class TicketsService {
     private readonly ticketModel: Model<TicketDocument>,
   ) {}
 
-  async listMyTickets(userId: string, raffleId?: string) {
+  async listMyTickets(
+    userId: string,
+    raffleId?: string,
+    opts?: { limit?: number },
+  ) {
     const filter: any = { userId: new Types.ObjectId(userId) };
     if (raffleId) filter.raffleId = new Types.ObjectId(raffleId);
 
-    return this.ticketModel.find(filter).sort({ createdAt: -1 }).exec();
+    // Pagination defensive + lean(): evite de charger tout l'historique en RAM
+    // pour les tres gros utilisateurs (le max metier est 200 tickets/raffle).
+    const limit = Math.min(1000, Math.max(1, Number(opts?.limit ?? 1000) || 1000));
+    return this.ticketModel
+      .find(filter)
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(limit)
+      .lean()
+      .exec();
   }
 
   async createMany(params: {

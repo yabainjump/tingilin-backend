@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/mongoose';
 import { ParticipationsService } from './participations.service';
 import { Participation } from './schemas/participation.schema';
+import { Ticket } from '../tickets/schemas/ticket.schema';
 
 describe('ParticipationsService', () => {
   let service: ParticipationsService;
@@ -15,6 +16,12 @@ describe('ParticipationsService', () => {
           useValue: {
             updateOne: jest.fn(),
             findOneAndUpdate: jest.fn(),
+          },
+        },
+        {
+          provide: getModelToken(Ticket.name),
+          useValue: {
+            aggregate: jest.fn().mockReturnValue({ exec: jest.fn() }),
           },
         },
       ],

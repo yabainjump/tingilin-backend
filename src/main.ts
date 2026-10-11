@@ -47,8 +47,8 @@ async function bootstrap() {
   const trustProxy = resolveTrustProxy(trustProxyRaw);
   const isProductionEnv =
     String(process.env.NODE_ENV ?? '').trim().toLowerCase() === 'production';
-  const jsonBodyLimit = String(process.env.HTTP_JSON_BODY_LIMIT || '2mb').trim() || '2mb';
-  const formBodyLimit = String(process.env.HTTP_FORM_BODY_LIMIT || '1mb').trim() || '1mb';
+  const jsonBodyLimit = String(process.env.HTTP_JSON_BODY_LIMIT || '512kb').trim() || '512kb';
+  const formBodyLimit = String(process.env.HTTP_FORM_BODY_LIMIT || '256kb').trim() || '256kb';
   const uploadsCacheMaxAge =
     String(process.env.UPLOADS_CACHE_MAX_AGE || '30d').trim() || '30d';
   const enableSwagger = parseBoolean(
@@ -92,8 +92,13 @@ async function bootstrap() {
     }),
   );
 
+  // rawBody conserve uniquement pour le webhook Digikuntz (verification HMAC).
+  // Toutes les autres requetes ne copient PAS leur corps en memoire: a 2000
+  // requetes simultanees, la duplication du body multipliait la RAM par 2.
+  const WEBHOOK_PATH_FRAGMENT = '/payments/digikuntz/webhook';
   const attachRawBody = (req: any, _res: unknown, buffer: Buffer) => {
-    if (buffer?.length) {
+    const path = String(req?.originalUrl ?? req?.url ?? '');
+    if (buffer?.length && path.includes(WEBHOOK_PATH_FRAGMENT)) {
       (req as RawBodyCarrier).rawBody = Buffer.from(buffer);
     }
   };

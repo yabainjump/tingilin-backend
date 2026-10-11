@@ -1144,62 +1144,138 @@ export class PaymentsService {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const [allTx, monthTx, ledgerRows, monthLedgerRows] = await Promise.all([
-      this.txModel.find().lean().exec(),
-      this.txModel
-        .find({ createdAt: { $gte: monthStart } })
-        .lean()
-        .exec(),
-      this.ledgerModel
-        .find({
-          entryType: 'CASH_IN',
-          currency: { $in: ['XAF', 'xof', 'XOF', 'xaf'] },
-        })
-        .lean()
-        .exec(),
-      this.ledgerModel
-        .find({
-          entryType: 'CASH_IN',
-          currency: { $in: ['XAF', 'xof', 'XOF', 'xaf'] },
-          createdAt: { $gte: monthStart },
-        })
-        .lean()
-        .exec(),
-    ]);
+    // Agrgations cote Mongo (ex-leclecture de TOUTES les collections en RAM).
+    const [txStatusRows, monthTxRows, ledgerProviderRows, monthLedgerRows] =
+      await Promise.all([
+        this.txModel
+          .aggregate([
+            {
+              $group: {
+                _id: {
+                  status: '$status',
+                  currency: { $toUpper: { $ifNull: ['$currency', 'XAF'] } },
+                },
+                count: { $sum: 1 },
+                amount: { $sum: { $ifNull: ['$amount', 0] } },
+              },
+            },
+          ])
+          .exec(),
+        this.txModel
+          .aggregate([
+            {
+              $match: {
+                createdAt: { $gte: monthStart },
+                status: 'SUCCESS',
+              },
+            },
+            {
+              $group: {
+                _id: { $toUpper: { $ifNull: ['$currency', 'XAF'] } },
+                amount: { $sum: { $ifNull: ['$amount', 0] } },
+              },
+            },
+          ])
+          .exec(),
+        this.ledgerModel
+          .aggregate([
+            { $match: { entryType: 'CASH_IN' } },
+            {
+              $group: {
+                _id: {
+                  provider: { $toUpper: { $ifNull: ['$provider', 'UNKNOWN'] } },
+                  currency: { $toUpper: { $ifNull: ['$currency', 'XAF'] } },
+                },
+                amount: { $sum: { $ifNull: ['$amount', 0] } },
+              },
+            },
+          ])
+          .exec(),
+        this.ledgerModel
+          .aggregate([
+            {
+              $match: { entryType: 'CASH_IN', createdAt: { $gte: monthStart } },
+            },
+            {
+              $group: {
+                _id: { $toUpper: { $ifNull: ['$currency', 'XAF'] } },
+                amount: { $sum: { $ifNull: ['$amount', 0] } },
+              },
+            },
+          ])
+          .exec(),
+      ]);
 
-    const successTx = allTx.filter((tx: any) => tx.status === 'SUCCESS');
-    const successTxXaf = successTx.filter(
-      (tx: any) => String(tx.currency ?? 'XAF').toUpperCase() === 'XAF',
+    const xafLedgerRows = ledgerProviderRows.filter((row: any) =>
+      ['XAF', 'XOF'].includes(String(row?._id?.currency ?? '')),
     );
-    const monthlySuccessXaf = monthTx.filter(
-      (tx: any) =>
-        tx.status === 'SUCCESS' &&
-        String(tx.currency ?? 'XAF').toUpperCase() === 'XAF',
-    );
+    const hasLedger = xafLedgerRows.length > 0;
 
     const byProvider: Record<string, number> = {};
-    const providerSource = ledgerRows.length > 0 ? ledgerRows : successTxXaf;
-    for (const row of providerSource) {
-      const provider = String((row as any).provider ?? 'UNKNOWN').toUpperCase();
-      byProvider[provider] =
-        (byProvider[provider] ?? 0) + Number((row as any).amount ?? 0);
+    for (const row of xafLedgerRows) {
+      const provider = String(row?._id?.provider ?? 'UNKNOWN');
+      byProvider[provider] = (byProvider[provider] ?? 0) + Number(row.amount ?? 0);
     }
 
-    const pendingCount = allTx.filter(
-      (tx: any) => tx.status === 'PENDING',
-    ).length;
-    const failedCount = allTx.filter(
-      (tx: any) => tx.status === 'FAILED',
-    ).length;
-    const pendingPayoutsXaf = allTx
-      .filter(
-        (tx: any) =>
-          tx.status === 'PENDING' &&
-          String(tx.currency ?? 'XAF').toUpperCase() === 'XAF',
-      )
-      .reduce((sum: number, tx: any) => sum + Number(tx.amount ?? 0), 0);
+    if (xafLedgerRows.length === 0) {
+      // Repli historique: quand aucun ledger n'existe, on derive les montants
+      // par fournisseur des transactions SUCCESS (comme l'ancienne version).
+      const txProviderRows: any[] = await this.txModel
+        .aggregate([
+          { $match: { status: 'SUCCESS' } },
+          {
+            $group: {
+              _id: {
+                provider: { $toUpper: { $ifNull: ['$provider', 'UNKNOWN'] } },
+                currency: { $toUpper: { $ifNull: ['$currency', 'XAF'] } },
+              },
+              amount: { $sum: { $ifNull: ['$amount', 0] } },
+            },
+          },
+        ])
+        .exec();
+      for (const row of txProviderRows) {
+        if (!['XAF', 'XOF'].includes(String(row?._id?.currency ?? ''))) continue;
+        const provider = String(row?._id?.provider ?? 'UNKNOWN');
+        byProvider[provider] = (byProvider[provider] ?? 0) + Number(row.amount ?? 0);
+      }
+    }
 
-    const successCount = successTx.length;
+    let successCount = 0;
+    let pendingCount = 0;
+    let failedCount = 0;
+    let successTxXafSum = 0;
+    let pendingPayoutsXaf = 0;
+    for (const row of txStatusRows) {
+      const status = String(row?._id?.status ?? '');
+      const currency = String(row?._id?.currency ?? '');
+      const count = Number(row?.count ?? 0);
+      const amount = Number(row?.amount ?? 0);
+
+      if (status === 'SUCCESS') {
+        successCount += count;
+        if (currency === 'XAF') successTxXafSum += amount;
+      }
+      if (status === 'PENDING') {
+        pendingCount += count;
+        if (currency === 'XAF') pendingPayoutsXaf += amount;
+      }
+      if (status === 'FAILED') {
+        failedCount += count;
+      }
+    }
+
+    const monthSuccessXaf =
+      Number(
+        monthTxRows.find((row: any) => String(row?._id ?? '') === 'XAF')
+          ?.amount ?? 0,
+      ) || 0;
+    const monthLedgerXaf =
+      Number(
+        monthLedgerRows.find((row: any) => String(row?._id ?? '') === 'XAF')
+          ?.amount ?? 0,
+      ) || 0;
+
     const successRateBase = successCount + pendingCount + failedCount;
     const successRate =
       successRateBase > 0
@@ -1208,26 +1284,13 @@ export class PaymentsService {
 
     return {
       currency: 'XAF',
-      totalCashInXaf:
-        ledgerRows.length > 0
-          ? ledgerRows.reduce(
-              (sum: number, row: any) => sum + Number(row.amount ?? 0),
-              0,
-            )
-          : successTxXaf.reduce(
-              (sum: number, tx: any) => sum + Number(tx.amount ?? 0),
-              0,
-            ),
-      monthCashInXaf:
-        monthLedgerRows.length > 0
-          ? monthLedgerRows.reduce(
-              (sum: number, row: any) => sum + Number(row.amount ?? 0),
-              0,
-            )
-          : monthlySuccessXaf.reduce(
-              (sum: number, tx: any) => sum + Number(tx.amount ?? 0),
-              0,
-            ),
+      totalCashInXaf: hasLedger
+        ? xafLedgerRows.reduce(
+            (sum: number, row: any) => sum + Number(row.amount ?? 0),
+            0,
+          )
+        : successTxXafSum,
+      monthCashInXaf: hasLedger && monthLedgerXaf > 0 ? monthLedgerXaf : monthSuccessXaf,
       successCount,
       pendingCount,
       failedCount,
@@ -1509,28 +1572,36 @@ export class PaymentsService {
     }
 
     const [txRows, ledgerRows] = await Promise.all([
-      this.txModel.find(txMatch).select('amount provider status').lean().exec(),
+      this.txModel
+        .aggregate([
+          { $match: txMatch },
+          {
+            $group: {
+              _id: {
+                provider: { $toUpper: { $ifNull: ['$provider', 'UNKNOWN'] } },
+                status: '$status',
+              },
+              amount: { $sum: { $ifNull: ['$amount', 0] } },
+            },
+          },
+        ])
+        .exec(),
       this.ledgerModel
-        .find(ledgerMatch)
-        .select('amount provider createdAt')
-        .lean()
+        .aggregate([
+          { $match: ledgerMatch },
+          {
+            $group: {
+              _id: { $toUpper: { $ifNull: ['$provider', 'UNKNOWN'] } },
+              amount: { $sum: { $ifNull: ['$amount', 0] } },
+            },
+          },
+        ])
         .exec(),
     ]);
 
-    const intentsAmountXaf = txRows.reduce(
-      (sum: number, row: any) => sum + Number(row.amount ?? 0),
-      0,
-    );
-    const confirmedCashInXaf = ledgerRows.reduce(
-      (sum: number, row: any) => sum + Number(row.amount ?? 0),
-      0,
-    );
-    const pendingAmountXaf = txRows
-      .filter((row: any) => row.status === 'PENDING')
-      .reduce((sum: number, row: any) => sum + Number(row.amount ?? 0), 0);
-    const failedAmountXaf = txRows
-      .filter((row: any) => row.status === 'FAILED')
-      .reduce((sum: number, row: any) => sum + Number(row.amount ?? 0), 0);
+    let intentsAmountXaf = 0;
+    let pendingAmountXaf = 0;
+    let failedAmountXaf = 0;
 
     const byProvider: Record<
       string,
@@ -1542,34 +1613,38 @@ export class PaymentsService {
       }
     > = {};
 
-    for (const tx of txRows) {
-      const provider = String((tx as any).provider ?? 'UNKNOWN').toUpperCase();
-      byProvider[provider] = byProvider[provider] ?? {
+    const bucketFor = (provider: string) =>
+      (byProvider[provider] = byProvider[provider] ?? {
         intentsXaf: 0,
         confirmedXaf: 0,
         pendingXaf: 0,
         failedXaf: 0,
-      };
-      byProvider[provider].intentsXaf += Number((tx as any).amount ?? 0);
-      if ((tx as any).status === 'PENDING') {
-        byProvider[provider].pendingXaf += Number((tx as any).amount ?? 0);
+      });
+
+    for (const tx of txRows) {
+      const provider = String(tx?._id?.provider ?? 'UNKNOWN');
+      const status = String(tx?._id?.status ?? '');
+      const amount = Number(tx?.amount ?? 0);
+
+      intentsAmountXaf += amount;
+      const bucket = bucketFor(provider);
+      bucket.intentsXaf += amount;
+      if (status === 'PENDING') {
+        pendingAmountXaf += amount;
+        bucket.pendingXaf += amount;
       }
-      if ((tx as any).status === 'FAILED') {
-        byProvider[provider].failedXaf += Number((tx as any).amount ?? 0);
+      if (status === 'FAILED') {
+        failedAmountXaf += amount;
+        bucket.failedXaf += amount;
       }
     }
 
+    let confirmedCashInXaf = 0;
     for (const entry of ledgerRows) {
-      const provider = String(
-        (entry as any).provider ?? 'UNKNOWN',
-      ).toUpperCase();
-      byProvider[provider] = byProvider[provider] ?? {
-        intentsXaf: 0,
-        confirmedXaf: 0,
-        pendingXaf: 0,
-        failedXaf: 0,
-      };
-      byProvider[provider].confirmedXaf += Number((entry as any).amount ?? 0);
+      const provider = String(entry?._id ?? 'UNKNOWN');
+      const amount = Number(entry?.amount ?? 0);
+      confirmedCashInXaf += amount;
+      bucketFor(provider).confirmedXaf += amount;
     }
 
     return {

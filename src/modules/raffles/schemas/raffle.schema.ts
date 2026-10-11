@@ -136,3 +136,14 @@ export class Raffle {
 }
 
 export const RaffleSchema = SchemaFactory.createForClass(Raffle);
+
+// Index des parcours critiques (home feed, live, tirage, gagnants).
+RaffleSchema.index({ status: 1, endAt: 1, createdAt: -1 });
+RaffleSchema.index({ status: 1, createdAt: -1 });
+RaffleSchema.index({ productId: 1, status: 1 });
+RaffleSchema.index({
+  status: 1,
+  'winner.isPublished': 1,
+  'winner.drawnAt': -1,
+});
+RaffleSchema.index({ winnerTicketId: 1 });

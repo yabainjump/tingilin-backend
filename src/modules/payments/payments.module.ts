@@ -26,7 +26,9 @@ import { PaymentIndexesService } from './payment-indexes.service';
     RafflesModule,
     NotificationsModule,
     ConfigModule,
-    HttpModule,
+    // Timeout strict sur les appels Digikuntz: sans timeout, un fournisseur
+    // lent pendant un pic de 2000 utilisateurs epuise sockets et event loop.
+    HttpModule.register({ timeout: 15_000 }),
     ParticipationsModule,
     UsersModule,
   ],

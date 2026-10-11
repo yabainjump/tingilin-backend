@@ -35,4 +35,12 @@ export class Notification {
 export const NotificationSchema = SchemaFactory.createForClass(Notification);
 
 NotificationSchema.index({ userId: 1, readAt: 1, createdAt: -1 });
-NotificationSchema.index({ userId: 1, type: 1, 'data.dedupeKey': 1 });
+// Unique: rend la deduplication atomique (sans elle, le cron multi-instance
+// peut creer des doublons de notifications).
+NotificationSchema.index(
+  { userId: 1, type: 1, 'data.dedupeKey': 1 },
+  {
+    unique: true,
+    partialFilterExpression: { 'data.dedupeKey': { $type: 'string' } },
+  },
+);

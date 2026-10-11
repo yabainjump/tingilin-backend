@@ -76,3 +76,8 @@ TransactionSchema.index(
     partialFilterExpression: { idempotencyKey: { $type: 'string' } },
   },
 );
+// Analytics / dashboards / liste admin: eviter les full scans des collections.
+TransactionSchema.index({ status: 1, createdAt: -1 });
+TransactionSchema.index({ createdAt: -1 });
+TransactionSchema.index({ userId: 1, createdAt: -1 });
+TransactionSchema.index({ raffleId: 1, status: 1 });

@@ -11,7 +11,13 @@ export class TicketsController {
   constructor(private readonly ticketsService: TicketsService) {}
 
   @Get('me')
-  myTickets(@Req() req: any, @Query('raffleId') raffleId?: string) {
-    return this.ticketsService.listMyTickets(req.user.sub, raffleId);
+  myTickets(
+    @Req() req: any,
+    @Query('raffleId') raffleId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.ticketsService.listMyTickets(req.user.sub, raffleId, {
+      limit: Number(limit ?? 1000) || 1000,
+    });
   }
 }

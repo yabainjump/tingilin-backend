@@ -37,3 +37,4 @@ LedgerEntrySchema.index(
   { transactionId: 1, entryType: 1 },
   { unique: true, sparse: true },
 );
+LedgerEntrySchema.index({ entryType: 1, currency: 1, createdAt: -1 });

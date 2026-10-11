@@ -6,10 +6,14 @@ import { Connection } from 'mongoose';
 import { RafflesService } from './raffles.service';
 import { parseBooleanFlag } from '../../common/config/runtime-security';
 
+const LOCK_KEY = 'raffle-scheduler';
+const LOCK_STALE_MS = 110_000; // > intervalle de 60s: lock orphelin reprise auto
+
 @Injectable()
 export class RafflesScheduler {
   private readonly logger = new Logger(RafflesScheduler.name);
   private running = false;
+  private lockIndexReady = false;
 
   constructor(
     private readonly rafflesService: RafflesService,
@@ -40,6 +44,45 @@ export class RafflesScheduler {
     );
   }
 
+  /**
+   * Verrou distribue Mongo: en multi-instance, UN SEUL processus execute le
+   * cron a chaque tick (sinon notifications/tirages dupliques entre instances).
+   * Le lock est repri automatiquement s'il devient orphelin (crash d'instance).
+   */
+  private async tryAcquireLock(): Promise<boolean> {
+    try {
+      const col = this.mongoConnection.collection<{
+        _id: string;
+        lockedAt: Date;
+      }>('scheduler_locks');
+      if (!this.lockIndexReady) {
+        await col
+          .createIndex({ lockedAt: 1 }, { expireAfterSeconds: 900 })
+          .catch(() => undefined);
+        this.lockIndexReady = true;
+      }
+
+      const now = new Date();
+      const staleBefore = new Date(now.getTime() - LOCK_STALE_MS);
+      const result: any = await col.findOneAndUpdate(
+        {
+          _id: LOCK_KEY,
+          $or: [
+            { lockedAt: { $exists: false } },
+            { lockedAt: { $lt: staleBefore } },
+          ],
+        },
+        { $set: { lockedAt: now } },
+        { upsert: true, returnDocument: 'after' },
+      );
+
+      return Boolean(result && result.lockedAt);
+    } catch {
+      // E11000 (doc existant non stale) ou Mongo indisponible: pas le leader.
+      return false;
+    }
+  }
+
   @Cron(CronExpression.EVERY_MINUTE)
   async tick() {
     if (!this.schedulerEnabled()) return;
@@ -50,6 +93,9 @@ export class RafflesScheduler {
       );
       return;
     }
+
+    const acquired = await this.tryAcquireLock();
+    if (!acquired) return;
 
     this.running = true;
     try {

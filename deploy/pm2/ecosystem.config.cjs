@@ -1,6 +1,6 @@
-// IMPORTANT: garder 1 instance sauf si un adaptateur Socket.IO partage
-// (Redis) est configure. Plusieurs instances cassent les tirages "live"
-// (chaque instance a son propre set de viewers et ses propres broadcasts).
+// Multi-instance SUPPORTE uniquement si REDIS_URL est configure dans .env
+// (adapter Socket.IO + compteur de viewers + verrou de broadcast + throttling
+// partages via Redis). Sans REDIS_URL: garder PM2_INSTANCES=1.
 const instances = Number(process.env.PM2_INSTANCES || 1);
 const basePort = Number(process.env.APP_PORT || 3001);
 

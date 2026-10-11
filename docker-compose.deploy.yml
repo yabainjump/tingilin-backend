@@ -3,7 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: tingilin-api
+    # PAS de container_name: permet `docker compose up --scale api=N`
+    # (multi-instances derriere le reverse proxy).
     env_file:
       - .env
     ports:

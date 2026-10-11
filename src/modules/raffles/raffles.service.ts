@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
@@ -43,6 +44,8 @@ import {
 
 @Injectable()
 export class RafflesService {
+  private readonly logger = new Logger(RafflesService.name);
+
   constructor(
     @InjectModel(Raffle.name)
     private readonly raffleModel: Model<RaffleDocument>,
@@ -74,6 +77,30 @@ export class RafflesService {
     const d = new Date(String(value));
     if (Number.isNaN(d.getTime())) throw new BadRequestException(msg);
     return d;
+  }
+
+  /**
+   * Fan-out de notifications par lots: evite de lancer N ecritures Mongo
+   * simultanees (raffle de 2000 participants => 2000 ecritures concurrentes
+   * sur un pool limite). Les lots sequentiels lissent la charge.
+   */
+  private async notifyUsersInBatches(
+    users: string[],
+    build: (userId: string) => Promise<any>,
+    batchSize = 50,
+  ): Promise<void> {
+    for (let i = 0; i < users.length; i += batchSize) {
+      const batch = users.slice(i, i + batchSize);
+      await Promise.all(
+        batch.map((userId) =>
+          build(userId).catch((error) =>
+            this.logger.warn(
+              `Notification fan-out failed for user ${userId}: ${String(error)}`,
+            ),
+          ),
+        ),
+      );
+    }
   }
 
   private async raffleTitle(raffle: any): Promise<string> {
@@ -116,20 +143,18 @@ export class RafflesService {
     if (!raffleId) return;
 
     const title = await this.raffleTitle(raffle);
-    await Promise.all(
-      users.map((userId) =>
-        this.notifications.createOnce({
-          userId,
-          type: 'DRAW_STARTED',
-          title: 'Tirage lancé 🎬',
-          body: `Le tirage de "${title}" démarre maintenant.`,
-          dedupeKey: `draw-started:${raffleId}`,
-          data: {
-            raffleId,
-            deepLink: '/tabs/winners',
-          },
-        }),
-      ),
+    await this.notifyUsersInBatches(users, (userId) =>
+      this.notifications.createOnce({
+        userId,
+        type: 'DRAW_STARTED',
+        title: 'Tirage lancé 🎬',
+        body: `Le tirage de "${title}" démarre maintenant.`,
+        dedupeKey: `draw-started:${raffleId}`,
+        data: {
+          raffleId,
+          deepLink: '/tabs/winners',
+        },
+      }),
     );
   }
 
@@ -147,20 +172,18 @@ export class RafflesService {
     const losers = users.filter((u) => String(u) !== String(winnerUserId));
     if (!losers.length) return;
 
-    await Promise.all(
-      losers.map((userId) =>
-        this.notifications.createOnce({
-          userId,
-          type: 'DRAW_RESULT',
-          title: 'Résultat du tirage disponible',
-          body: `Le tirage de "${title}" est terminé. Appuie pour voir le résultat.`,
-          dedupeKey: `draw-result:${raffleId}`,
-          data: {
-            raffleId,
-            deepLink: `/tabs/raffle-details/${raffleId}`,
-          },
-        }),
-      ),
+    await this.notifyUsersInBatches(losers, (userId) =>
+      this.notifications.createOnce({
+        userId,
+        type: 'DRAW_RESULT',
+        title: 'Résultat du tirage disponible',
+        body: `Le tirage de "${title}" est terminé. Appuie pour voir le résultat.`,
+        dedupeKey: `draw-result:${raffleId}`,
+        data: {
+          raffleId,
+          deepLink: `/tabs/raffle-details/${raffleId}`,
+        },
+      }),
     );
   }
 
@@ -195,21 +218,19 @@ export class RafflesService {
       if (!users.length) continue;
 
       const title = await this.raffleTitle(raffle);
-      await Promise.all(
-        users.map((userId) =>
-          this.notifications.createOnce({
-            userId,
-            type: 'ENDING_SOON',
-            title: 'Le tirage se termine bientôt ⏳',
-            body: `"${title}" se termine dans environ ${windowMin} minute(s).`,
-            dedupeKey: `ending-soon:${raffleId}:${windowMin}`,
-            data: {
-              raffleId,
-              windowMin,
-              deepLink: `/tabs/raffle-details/${raffleId}`,
-            },
-          }),
-        ),
+      await this.notifyUsersInBatches(users, (userId) =>
+        this.notifications.createOnce({
+          userId,
+          type: 'ENDING_SOON',
+          title: 'Le tirage se termine bientôt ⏳',
+          body: `"${title}" se termine dans environ ${windowMin} minute(s).`,
+          dedupeKey: `ending-soon:${raffleId}:${windowMin}`,
+          data: {
+            raffleId,
+            windowMin,
+            deepLink: `/tabs/raffle-details/${raffleId}`,
+          },
+        }),
       );
     }
   }
