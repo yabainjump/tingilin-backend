@@ -108,6 +108,12 @@ export class RafflesLiveGateway
       try {
         const pubClient = this.redisClient.duplicate();
         const subClient = this.redisClient.duplicate();
+        pubClient.on('error', (error) =>
+          this.logger.warn(`Socket.IO redis pub error: ${error?.message ?? error}`),
+        );
+        subClient.on('error', (error) =>
+          this.logger.warn(`Socket.IO redis sub error: ${error?.message ?? error}`),
+        );
         this.server.adapter(createAdapter(pubClient, subClient));
         this.redisAdapterReady = true;
         this.logger.log('Socket.IO Redis adapter enabled (multi-instance ready)');
