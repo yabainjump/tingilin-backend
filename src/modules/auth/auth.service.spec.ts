@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import { UsersService } from '../users/users.service';
 import { AuditService } from '../audit/audit.service';
+import { OAuth2Client } from 'google-auth-library';
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -20,6 +21,7 @@ describe('AuthService', () => {
       JWT_REFRESH_EXPIRES_IN: '7d',
       NODE_ENV: 'test',
       PASSWORD_RESET_DEBUG_RESPONSE: 'false',
+      GOOGLE_CLIENT_ID: 'google-web-client.apps.googleusercontent.com',
     };
 
     usersService = {
@@ -73,6 +75,73 @@ describe('AuthService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  it('accepts a verified Google ID token for an active existing user', async () => {
+    const save = jest.fn().mockResolvedValue(undefined);
+    const user = {
+      _id: { toString: () => 'user-google-1' },
+      email: 'user@example.com',
+      role: 'USER',
+      status: 'ACTIVE',
+      tokenVersion: 0,
+      save,
+    };
+    usersService.findByEmail.mockResolvedValue(user);
+    const verifyIdToken = jest
+      .spyOn(OAuth2Client.prototype, 'verifyIdToken')
+      .mockResolvedValue({
+        getPayload: () => ({
+          sub: 'google-user-1',
+          email: 'User@Example.com',
+          email_verified: true,
+          iss: 'https://accounts.google.com',
+          aud: configValues.GOOGLE_CLIENT_ID,
+          exp: Math.floor(Date.now() / 1000) + 300,
+          iat: Math.floor(Date.now() / 1000),
+        }),
+      } as any);
+
+    await expect(
+      service.loginWithGoogle({ idToken: 'header.payload.signature' }),
+    ).resolves.toMatchObject({
+      access_token: 'access.token',
+    });
+
+    expect(verifyIdToken).toHaveBeenCalledWith({
+      idToken: 'header.payload.signature',
+      audience: configValues.GOOGLE_CLIENT_ID,
+    });
+    expect(usersService.findByEmail).toHaveBeenCalledWith('user@example.com');
+    expect(save).toHaveBeenCalled();
+  });
+
+  it('rejects an invalid Google ID token before looking up a user', async () => {
+    jest
+      .spyOn(OAuth2Client.prototype, 'verifyIdToken')
+      .mockRejectedValue(new Error('invalid signature'));
+
+    await expect(
+      service.loginWithGoogle({ idToken: 'header.payload.signature' }),
+    ).rejects.toThrow('Invalid Google token');
+    expect(usersService.findByEmail).not.toHaveBeenCalled();
+  });
+
+  it('rejects a Google account whose email is not verified', async () => {
+    jest
+      .spyOn(OAuth2Client.prototype, 'verifyIdToken')
+      .mockResolvedValue({
+        getPayload: () => ({
+          sub: 'google-user-1',
+          email: 'user@example.com',
+          email_verified: false,
+        }),
+      } as any);
+
+    await expect(
+      service.loginWithGoogle({ idToken: 'header.payload.signature' }),
+    ).rejects.toThrow('Invalid Google token');
+    expect(usersService.findByEmail).not.toHaveBeenCalled();
   });
 
   it('rotates refresh token state on logout', async () => {

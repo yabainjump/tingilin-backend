@@ -48,6 +48,7 @@ copy .env.example .env
 | `JWT_REFRESH_SECRET` | Oui (prod) | `CHANGE_ME_REFRESH_SECRET` | Signature refresh token |
 | `JWT_ACCESS_EXPIRES_IN` | Non | `15m` | Expiration access token |
 | `JWT_REFRESH_EXPIRES_IN` | Non | `7d` | Expiration refresh token |
+| `GOOGLE_CLIENT_ID` | Oui (Google Auth) | - | Client OAuth Web attendu dans l'audience des ID tokens Google |
 | `SETUP_KEY` | Oui (si bootstrap admin) | - | Protection endpoint setup admin |
 | `PASSWORD_RESET_RESEND_COOLDOWN_SEC` | Non | `60` | Cooldown resend code reset |
 | `PASSWORD_RESET_CODE_TTL_MINUTES` | Non | `15` | Validite code reset |
@@ -67,6 +68,11 @@ copy .env.example .env
 | `DIGIKUNTZ_SECRET_KEY` | Oui (si provider DIGIKUNTZ) | - | Clé API secrète, header `x-secret-key` |
 | `DIGIKUNTZ_CALLBACK_URL` | Oui (si provider DIGIKUNTZ) | - | Retour utilisateur après le checkout |
 | `DIGIKUNTZ_WEBHOOK_SIGNATURE_MODE` | Non | `provider-verify` | Revérifie chaque webhook auprès de Digikuntz |
+
+`GOOGLE_CLIENT_ID` doit contenir le meme Client OAuth **Application Web** que
+`googleWebClientId` dans l'app Ionic. L'API valide la signature, l'audience,
+l'emetteur, l'expiration et l'email verifie avant de creer ou connecter un
+compte. Ne pas utiliser le Client OAuth Android comme audience.
 
 Documentation officielle vérifiée : https://payments.digikuntz.com/api-doc.
 Le portail et la documentation sont servis par `payments.digikuntz.com`, tandis
@@ -171,6 +177,7 @@ Tous les endpoints sont prefixes par `/api/v1`.
 
 - `POST /auth/register`
 - `POST /auth/login`
+- `POST /auth/google`
 - `POST /auth/forgot-password`
 - `POST /auth/reset-password`
 - `POST /auth/refresh`

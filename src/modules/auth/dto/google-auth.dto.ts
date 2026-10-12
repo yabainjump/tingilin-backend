@@ -9,6 +9,7 @@ import { CAMEROON_REGIONS } from '../../../common/regions';
 
 export class GoogleAuthDto {
   @IsJWT()
+  @MaxLength(4096)
   idToken!: string;
 
   @IsOptional()

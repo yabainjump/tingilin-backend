@@ -10,6 +10,7 @@ import * as crypto from 'crypto';
 import * as nodemailer from 'nodemailer';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { OAuth2Client, type TokenPayload } from 'google-auth-library';
 import { UsersService } from '../users/users.service';
 import type { StringValue } from 'ms';
 import { RegisterDto } from './dto/register.dto';
@@ -36,6 +37,8 @@ type MailDeliveryResult = {
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+  private googleOAuthClient: OAuth2Client | null = null;
+  private googleOAuthClientId = '';
 
   constructor(
     private readonly usersService: UsersService,
@@ -97,8 +100,8 @@ export class AuthService {
 
   /**
    * Connexion/inscription via Google. Le idToken (JWT) produit par le SDK
-   * Google est verifie cote serveur (audience + signature via l'endpoint
-   * officiel tokeninfo) AVANT toute creation de compte.
+   * Google est verifie cote serveur (signature, audience, emetteur et
+   * expiration) AVANT toute creation de compte.
    */
   async loginWithGoogle(dto: {
     idToken: string;
@@ -170,43 +173,33 @@ export class AuthService {
 
   private async verifyGoogleIdToken(
     idToken: string,
-  ): Promise<Record<string, any>> {
-    const clientId = String(this.config.get<string>('GOOGLE_CLIENT_ID') ?? '').trim();
+  ): Promise<TokenPayload> {
+    const clientId = String(
+      this.config.get<string>('GOOGLE_CLIENT_ID') ?? '',
+    ).trim();
     if (!clientId) {
       throw new BadRequestException('Google sign-in is not configured');
     }
 
-    let data: Record<string, any>;
     try {
-      const res = await fetch(
-        `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`,
-      );
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      data = (await res.json()) as Record<string, any>;
+      if (!this.googleOAuthClient || this.googleOAuthClientId !== clientId) {
+        this.googleOAuthClient = new OAuth2Client(clientId);
+        this.googleOAuthClientId = clientId;
+      }
+
+      const ticket = await this.googleOAuthClient.verifyIdToken({
+        idToken,
+        audience: clientId,
+      });
+      const payload = ticket.getPayload();
+      if (!payload?.email || payload.email_verified !== true) {
+        throw new Error('Google email is missing or not verified');
+      }
+
+      return payload;
     } catch {
       throw new UnauthorizedException('Invalid Google token');
     }
-
-    const audience = String(data?.aud ?? '');
-    const issuer = String(data?.iss ?? '');
-    const emailVerified =
-      data?.email_verified === true || data?.email_verified === 'true';
-    const expiresAtMs = Number(data?.exp ?? 0) * 1000;
-
-    if (audience !== clientId) {
-      throw new UnauthorizedException('Google token audience mismatch');
-    }
-    if (!['accounts.google.com', 'https://accounts.google.com'].includes(issuer)) {
-      throw new UnauthorizedException('Google token issuer mismatch');
-    }
-    if (!emailVerified) {
-      throw new UnauthorizedException('Google email not verified');
-    }
-    if (!Number.isFinite(expiresAtMs) || expiresAtMs < Date.now()) {
-      throw new UnauthorizedException('Google token expired');
-    }
-
-    return data;
   }
 
   async adminInviteUser(dto: InviteUserDto) {
