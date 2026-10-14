@@ -11,6 +11,7 @@ import { ProductsService } from '../products/products.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RaffleStatus } from './schemas/raffle.schema';
 import { Types } from 'mongoose';
+import { QueryCacheService } from '../../common/cache/query-cache.service';
 
 describe('RafflesService', () => {
   let service: RafflesService;
@@ -32,7 +33,9 @@ describe('RafflesService', () => {
       find: jest.fn().mockReturnValue(queryMock),
       findById: jest.fn(),
       countDocuments: jest.fn(),
-      aggregate: jest.fn(),
+      aggregate: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue([]),
+      }),
       findOneAndUpdate: jest.fn(),
       findByIdAndUpdate: jest.fn(),
       create: jest.fn(),
@@ -75,6 +78,12 @@ describe('RafflesService', () => {
       createOnce: jest.fn(),
     };
 
+    const queryCacheMock = {
+      remember: jest.fn(async (_key: string, load: () => Promise<unknown>) =>
+        load(),
+      ),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RafflesService,
@@ -87,6 +96,7 @@ describe('RafflesService', () => {
         { provide: ProductsService, useValue: {} },
         { provide: getConnectionToken(), useValue: {} },
         { provide: NotificationsService, useValue: notificationsMock },
+        { provide: QueryCacheService, useValue: queryCacheMock },
       ],
     }).compile();
 
@@ -100,33 +110,64 @@ describe('RafflesService', () => {
   it('listPublic(sort=endAt) should only query active LIVE raffles', async () => {
     await service.listPublic({ sort: 'endAt', limit: 10 });
 
-    expect(raffleModelMock.find).toHaveBeenCalledWith(
-      expect.objectContaining({
+    const pipeline = raffleModelMock.aggregate.mock.calls.at(-1)?.[0];
+    expect(pipeline[0]).toEqual({
+      $match: expect.objectContaining({
         status: RaffleStatus.LIVE,
         endAt: expect.objectContaining({ $gt: expect.any(Date) }),
         $or: expect.any(Array),
       }),
-    );
+    });
   });
 
   it('listPublic(sort=createdAt) should include LIVE/CLOSED/DRAWN', async () => {
     await service.listPublic({ sort: 'createdAt', limit: 10 });
 
-    expect(raffleModelMock.find).toHaveBeenCalledWith(
-      expect.objectContaining({
+    const pipeline = raffleModelMock.aggregate.mock.calls.at(-1)?.[0];
+    expect(pipeline[0]).toEqual({
+      $match: expect.objectContaining({
         status: expect.objectContaining({
           $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
         }),
       }),
-    );
+    });
   });
 
   it('listPublic(category=all) should skip product category filtering', async () => {
     await service.listPublic({ sort: 'endAt', limit: 10, category: 'all' });
 
-    const match = raffleModelMock.find.mock.calls.at(-1)?.[0];
+    const pipeline = raffleModelMock.aggregate.mock.calls.at(-1)?.[0];
+    const productMatch = pipeline[3].$lookup.pipeline[0].$match;
     expect(productModelMock.find).not.toHaveBeenCalled();
-    expect(match?.productId).toBeUndefined();
+    expect(productMatch.categoryId).toBeUndefined();
+  });
+
+  it('listWinnersPublic should resolve winners with one aggregation', async () => {
+    const raffleId = new Types.ObjectId();
+    raffleModelMock.aggregate.mockReturnValueOnce({
+      exec: jest.fn().mockResolvedValue([
+        {
+          _id: raffleId,
+          winner: { drawnAt: new Date('2026-01-01T00:00:00.000Z') },
+          product: { title: 'Phone', imageUrl: '/uploads/phone.webp' },
+          ticket: { serial: 'TGL-TEST-1234' },
+          user: { username: 'winner' },
+        },
+      ]),
+    });
+
+    const result = await service.listWinnersPublic(10);
+
+    expect(raffleModelMock.aggregate).toHaveBeenCalledTimes(1);
+    expect(ticketModelMock.findById).not.toHaveBeenCalled();
+    expect(result.data).toEqual([
+      expect.objectContaining({
+        raffleId: raffleId.toString(),
+        winnerName: 'winner',
+        prizeTitle: 'Phone',
+        ticketCode: '1234',
+      }),
+    ]);
   });
 
   it('drawWinner claims the draw atomically and records a verifiable proof', async () => {

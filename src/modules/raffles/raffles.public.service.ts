@@ -8,6 +8,7 @@ import { Model, Types } from 'mongoose';
 
 import { Raffle, RaffleStatus } from './schemas/raffle.schema';
 import { Product } from '../products/schemas/product.schema';
+import { QueryCacheService } from '../../common/cache/query-cache.service';
 
 type RaffleLean = {
   _id: Types.ObjectId;
@@ -34,6 +35,7 @@ export class RafflesPublicService {
   constructor(
     @InjectModel(Raffle.name) private readonly raffleModel: Model<Raffle>,
     @InjectModel(Product.name) private readonly productModel: Model<Product>,
+    private readonly queryCache: QueryCacheService,
   ) {}
 
   private asObjectId(id: string) {
@@ -53,6 +55,10 @@ export class RafflesPublicService {
   }
 
   async listLive() {
+    return this.queryCache.remember('raffles:live', () => this.loadLive());
+  }
+
+  private async loadLive() {
     const now = new Date();
 
     const raffles = await this.raffleModel
@@ -61,6 +67,9 @@ export class RafflesPublicService {
         startAt: { $lte: now },
         endAt: { $gt: now },
       })
+      .select(
+        '_id productId status ticketPrice currency startAt endAt rules ticketsSold participantsCount',
+      )
       .sort({ endAt: 1 })
       .limit(50)
       .lean<RaffleLean[]>()
@@ -111,6 +120,9 @@ export class RafflesPublicService {
 
     const raffle: any = await this.raffleModel
       .findOne(this.publicRaffleFilter(_id))
+      .select(
+        '_id productId status ticketPrice currency startAt endAt rules ticketsSold participantsCount',
+      )
       .lean()
       .exec();
     if (!raffle) throw new NotFoundException('Raffle not found');
@@ -184,6 +196,7 @@ export class RafflesPublicService {
 
     const raffle: any = await this.raffleModel
       .findOne(this.publicRaffleFilter(_id))
+      .select('_id productId status winnerTicketId winnerUserId drawnAt winner')
       .lean()
       .exec();
     if (!raffle) throw new NotFoundException('Raffle not found');

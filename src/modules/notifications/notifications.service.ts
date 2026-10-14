@@ -3,7 +3,6 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Notification, NotificationType } from './schemas/notification.schema';
 
-
 @Injectable()
 export class NotificationsService {
   constructor(
@@ -86,7 +85,14 @@ export class NotificationsService {
     const q: any = { userId };
     if (opts.unreadOnly) q.readAt = null;
 
-    const [items, total, unreadCount] = await Promise.all([
+    const countQueries = opts.unreadOnly
+      ? [this.notifModel.countDocuments(q)]
+      : [
+          this.notifModel.countDocuments(q),
+          this.notifModel.countDocuments({ userId, readAt: null }),
+        ];
+
+    const [items, counts] = await Promise.all([
       this.notifModel
         .find(q)
         .select('_id userId type title body data readAt createdAt')
@@ -95,9 +101,10 @@ export class NotificationsService {
         .limit(limit)
         .lean()
         .exec(),
-      this.notifModel.countDocuments(q),
-      this.notifModel.countDocuments({ userId, readAt: null }),
+      Promise.all(countQueries),
     ]);
+    const total = counts[0];
+    const unreadCount = opts.unreadOnly ? total : counts[1];
 
     return {
       data: items,
@@ -133,4 +140,3 @@ export class NotificationsService {
     return { ok: true };
   }
 }
-

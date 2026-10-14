@@ -16,13 +16,17 @@ export class ProductsService {
   async listPublished() {
     return this.productModel
       .find({ status: 'PUBLISHED' })
+      .select('-createdBy')
       .sort({ createdAt: -1 })
+      .lean()
       .exec();
   }
 
   async getPublishedById(id: string) {
     const p = await this.productModel
       .findOne({ _id: id, status: 'PUBLISHED' })
+      .select('-createdBy')
+      .lean()
       .exec();
     if (!p) throw new NotFoundException('Product not found');
     return p;

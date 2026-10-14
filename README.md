@@ -36,38 +36,43 @@ copy .env.example .env
 
 ### Variables d'environnement
 
-| Variable | Requis | Defaut code | Usage |
-|---|---|---|---|
-| `APP_PORT` | Non | `3000` | Port HTTP API |
-| `MONGO_URI` | Oui | - | Connexion MongoDB vers un replica set (requis pour les transactions de paiement) |
-| `APP_NAME` | Non | `Tingilin` | Nom app (emails) |
-| `APP_WEB_URL` | Non | `http://localhost:8100` | Lien referral genere |
-| `PUBLIC_APP_URL` | Non | `http://localhost:8100` | Redirection share page |
-| `PUBLIC_API_URL` | Non | `http://localhost:3000` | URL meta/OG share |
-| `JWT_ACCESS_SECRET` | Oui (prod) | `CHANGE_ME_ACCESS_SECRET` | Signature access token |
-| `JWT_REFRESH_SECRET` | Oui (prod) | `CHANGE_ME_REFRESH_SECRET` | Signature refresh token |
-| `JWT_ACCESS_EXPIRES_IN` | Non | `15m` | Expiration access token |
-| `JWT_REFRESH_EXPIRES_IN` | Non | `7d` | Expiration refresh token |
-| `GOOGLE_CLIENT_ID` | Oui (Google Auth) | - | Client OAuth Web attendu dans l'audience des ID tokens Google |
-| `SETUP_KEY` | Oui (si bootstrap admin) | - | Protection endpoint setup admin |
-| `PASSWORD_RESET_RESEND_COOLDOWN_SEC` | Non | `60` | Cooldown resend code reset |
-| `PASSWORD_RESET_CODE_TTL_MINUTES` | Non | `15` | Validite code reset |
-| `PASSWORD_RESET_MAX_ATTEMPTS` | Non | `5` | Tentatives max reset |
-| `PASSWORD_RESET_DEBUG_RESPONSE` | Non | `false` | Retourne le code en reponse (dev) |
-| `SMTP_HOST` | Non | vide | SMTP host |
-| `SMTP_PORT` | Non | `587` | SMTP port |
-| `SMTP_SECURE` | Non | `false` | TLS direct (`true`/`false`) |
-| `SMTP_SERVICE` | Non | vide | Service SMTP NodeMailer (`gmail`, etc.) |
-| `SMTP_USER` | Non | vide | SMTP username (email ou identifiant SMTP) |
-| `SMTP_PASS` | Non | vide | SMTP password |
-| `MAIL_FROM` | Non | `Tingilin <no-reply@tingilin.local>` | Expediteur emails |
-| `SMTP_TLS_REJECT_UNAUTHORIZED` | Non | `true` | Validation TLS stricte |
-| `SMTP_TLS_SERVERNAME` | Non | vide | Nom TLS explicite si requis par le provider |
-| `DIGIKUNTZ_BASE_URL` | Oui (si provider DIGIKUNTZ) | `https://app.digikuntz.com/dev` | Base API officielle Digikuntz |
-| `DIGIKUNTZ_USER_ID` | Oui (si provider DIGIKUNTZ) | - | Identifiant du compte, header `x-user-id` |
-| `DIGIKUNTZ_SECRET_KEY` | Oui (si provider DIGIKUNTZ) | - | Clé API secrète, header `x-secret-key` |
-| `DIGIKUNTZ_CALLBACK_URL` | Oui (si provider DIGIKUNTZ) | - | Retour utilisateur après le checkout |
-| `DIGIKUNTZ_WEBHOOK_SIGNATURE_MODE` | Non | `provider-verify` | Revérifie chaque webhook auprès de Digikuntz |
+| Variable                             | Requis                      | Defaut code                          | Usage                                                                            |
+| ------------------------------------ | --------------------------- | ------------------------------------ | -------------------------------------------------------------------------------- |
+| `APP_PORT`                           | Non                         | `3000`                               | Port HTTP API                                                                    |
+| `MONGO_URI`                          | Oui                         | -                                    | Connexion MongoDB vers un replica set (requis pour les transactions de paiement) |
+| `REDIS_URL`                          | Oui (multi-instance)        | vide                                 | Cache public, rate limiting et Socket.IO partages entre instances                |
+| `PUBLIC_QUERY_CACHE_TTL_MS`          | Non                         | `10000`                              | Duree du cache des lectures publiques en millisecondes                           |
+| `PUBLIC_QUERY_CACHE_MAX_ENTRIES`     | Non                         | `250`                                | Nombre maximal d'entrees du cache memoire par instance                           |
+| `PUBLIC_QUERY_CACHE_MAX_ENTRY_BYTES` | Non                         | `2097152`                            | Taille maximale d'une reponse pouvant etre mise en cache                         |
+| `PUBLIC_QUERY_CACHE_MAX_MEMORY_BYTES` | Non                        | `33554432`                           | Memoire maximale du cache local par instance                                     |
+| `APP_NAME`                           | Non                         | `Tingilin`                           | Nom app (emails)                                                                 |
+| `APP_WEB_URL`                        | Non                         | `http://localhost:8100`              | Lien referral genere                                                             |
+| `PUBLIC_APP_URL`                     | Non                         | `http://localhost:8100`              | Redirection share page                                                           |
+| `PUBLIC_API_URL`                     | Non                         | `http://localhost:3000`              | URL meta/OG share                                                                |
+| `JWT_ACCESS_SECRET`                  | Oui (prod)                  | `CHANGE_ME_ACCESS_SECRET`            | Signature access token                                                           |
+| `JWT_REFRESH_SECRET`                 | Oui (prod)                  | `CHANGE_ME_REFRESH_SECRET`           | Signature refresh token                                                          |
+| `JWT_ACCESS_EXPIRES_IN`              | Non                         | `15m`                                | Expiration access token                                                          |
+| `JWT_REFRESH_EXPIRES_IN`             | Non                         | `7d`                                 | Expiration refresh token                                                         |
+| `GOOGLE_CLIENT_ID`                   | Oui (Google Auth)           | -                                    | Client OAuth Web attendu dans l'audience des ID tokens Google                    |
+| `SETUP_KEY`                          | Oui (si bootstrap admin)    | -                                    | Protection endpoint setup admin                                                  |
+| `PASSWORD_RESET_RESEND_COOLDOWN_SEC` | Non                         | `60`                                 | Cooldown resend code reset                                                       |
+| `PASSWORD_RESET_CODE_TTL_MINUTES`    | Non                         | `15`                                 | Validite code reset                                                              |
+| `PASSWORD_RESET_MAX_ATTEMPTS`        | Non                         | `5`                                  | Tentatives max reset                                                             |
+| `PASSWORD_RESET_DEBUG_RESPONSE`      | Non                         | `false`                              | Retourne le code en reponse (dev)                                                |
+| `SMTP_HOST`                          | Non                         | vide                                 | SMTP host                                                                        |
+| `SMTP_PORT`                          | Non                         | `587`                                | SMTP port                                                                        |
+| `SMTP_SECURE`                        | Non                         | `false`                              | TLS direct (`true`/`false`)                                                      |
+| `SMTP_SERVICE`                       | Non                         | vide                                 | Service SMTP NodeMailer (`gmail`, etc.)                                          |
+| `SMTP_USER`                          | Non                         | vide                                 | SMTP username (email ou identifiant SMTP)                                        |
+| `SMTP_PASS`                          | Non                         | vide                                 | SMTP password                                                                    |
+| `MAIL_FROM`                          | Non                         | `Tingilin <no-reply@tingilin.local>` | Expediteur emails                                                                |
+| `SMTP_TLS_REJECT_UNAUTHORIZED`       | Non                         | `true`                               | Validation TLS stricte                                                           |
+| `SMTP_TLS_SERVERNAME`                | Non                         | vide                                 | Nom TLS explicite si requis par le provider                                      |
+| `DIGIKUNTZ_BASE_URL`                 | Oui (si provider DIGIKUNTZ) | `https://app.digikuntz.com/dev`      | Base API officielle Digikuntz                                                    |
+| `DIGIKUNTZ_USER_ID`                  | Oui (si provider DIGIKUNTZ) | -                                    | Identifiant du compte, header `x-user-id`                                        |
+| `DIGIKUNTZ_SECRET_KEY`               | Oui (si provider DIGIKUNTZ) | -                                    | Clé API secrète, header `x-secret-key`                                           |
+| `DIGIKUNTZ_CALLBACK_URL`             | Oui (si provider DIGIKUNTZ) | -                                    | Retour utilisateur après le checkout                                             |
+| `DIGIKUNTZ_WEBHOOK_SIGNATURE_MODE`   | Non                         | `provider-verify`                    | Revérifie chaque webhook auprès de Digikuntz                                     |
 
 `GOOGLE_CLIENT_ID` doit contenir le meme Client OAuth **Application Web** que
 `googleWebClientId` dans l'app Ionic. L'API valide la signature, l'audience,

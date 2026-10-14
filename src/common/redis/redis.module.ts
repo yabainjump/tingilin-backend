@@ -2,8 +2,10 @@ import { Global, Module, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
 import Redis from 'ioredis';
+import { QueryCacheService } from '../cache/query-cache.service';
+import { REDIS_CLIENT } from './redis.constants';
 
-export const REDIS_CLIENT = 'REDIS_CLIENT';
+export { REDIS_CLIENT } from './redis.constants';
 
 /**
  * Fournit un client Redis OPTIONNEL (token = null si REDIS_URL est absent).
@@ -37,8 +39,9 @@ export const REDIS_CLIENT = 'REDIS_CLIENT';
         return client;
       },
     },
+    QueryCacheService,
   ],
-  exports: [REDIS_CLIENT],
+  exports: [REDIS_CLIENT, QueryCacheService],
 })
 export class RedisModule implements OnApplicationShutdown {
   onApplicationShutdown() {

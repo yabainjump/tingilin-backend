@@ -33,6 +33,7 @@ import {
 import { NotificationsService } from '../notifications/notifications.service';
 import { storeOptimizedImageFromDataUrl } from '../../common/uploads/image-storage';
 import { normalizeRegion } from '../../common/regions';
+import { QueryCacheService } from '../../common/cache/query-cache.service';
 import {
   PROVABLY_FAIR_ALGORITHM,
   PROVABLY_FAIR_FORMULA,
@@ -68,6 +69,7 @@ export class RafflesService {
     @InjectConnection() private readonly connection: Connection,
 
     private readonly notifications: NotificationsService,
+    private readonly queryCache: QueryCacheService,
   ) {}
 
   private ensureObjectId(id: string, msg = 'Invalid id'): void {
@@ -243,19 +245,38 @@ export class RafflesService {
     region?: string;
   }) {
     const limit = Math.min(Math.max(Number(opts?.limit ?? 30), 1), 100);
-    const now = new Date();
     const category = String(opts?.category ?? '')
       .trim()
       .toUpperCase();
     const region = normalizeRegion(opts?.region);
+    const sortName = opts?.sort === 'endAt' ? 'endAt' : 'createdAt';
+    const cacheKey = `raffles:list:${JSON.stringify({
+      limit,
+      sort: sortName,
+      category,
+      region,
+    })}`;
 
-    const sort =
-      opts?.sort === 'endAt' ? { endAt: 1, createdAt: -1 } : { createdAt: -1 };
+    return this.queryCache.remember(cacheKey, () =>
+      this.loadPublicRaffles({ limit, sort: sortName, category, region }),
+    );
+  }
+
+  private async loadPublicRaffles(opts: {
+    limit: number;
+    sort: 'endAt' | 'createdAt';
+    category: string;
+    region: string | null;
+  }) {
+    const now = new Date();
+
+    const sort: Record<string, 1 | -1> =
+      opts.sort === 'endAt' ? { endAt: 1, createdAt: -1 } : { createdAt: -1 };
 
     // Pour "Ending Soon", on veut uniquement les raffles encore jouables.
     // Sans ça, les raffles déjà terminés peuvent saturer le top N.
     const match =
-      opts?.sort === 'endAt'
+      opts.sort === 'endAt'
         ? {
             status: RaffleStatus.LIVE,
             endAt: { $gt: now },
@@ -267,66 +288,66 @@ export class RafflesService {
             },
           };
 
-    if (category && category !== 'ALL') {
-      const productIds = await this.productModel
-        .find({ categoryId: category })
-        .select('_id')
-        .lean()
-        .exec();
-
-      if (!productIds.length) {
-        return [];
-      }
-
-      (match as any).productId = {
-        $in: productIds.map((row: any) => row._id),
-      };
+    const productMatch: Record<string, unknown> = {
+      $expr: { $eq: ['$_id', '$$productId'] },
+      status: 'PUBLISHED',
+    };
+    if (opts.category && opts.category !== 'ALL') {
+      productMatch.categoryId = opts.category;
+    }
+    if (opts.region) {
+      productMatch.$or = [
+        { region: opts.region },
+        { region: { $in: [null, ''] } },
+      ];
     }
 
-    // Personnalisation regionale: l'utilisateur ne voit que les tombolas de sa
-    // region (les produits sans region -- historiques -- restent visibles).
-    if (region) {
-      const regionalProductIds = await this.productModel
-        .find({
-          $or: [{ region }, { region: { $in: [null, ''] } }],
-        })
-        .select('_id')
-        .lean()
-        .exec();
-
-      if (!regionalProductIds.length) {
-        return [];
-      }
-
-      const regionalIdSet = new Set(
-        regionalProductIds.map((row: any) => String(row._id)),
-      );
-      const existingFilter = (match as any).productId?.$in as
-        | any[]
-        | undefined;
-      if (existingFilter) {
-        const filtered = existingFilter.filter((id: any) =>
-          regionalIdSet.has(String(id)),
-        );
-        if (!filtered.length) return [];
-        (match as any).productId = { $in: filtered };
-      } else {
-        (match as any).productId = {
-          $in: regionalProductIds.map((row: any) => row._id),
-        };
-      }
-    }
-
+    // Une seule requete Mongo remplace les recherches d'identifiants produit
+    // suivies du populate. La projection retire aussi les preuves de tirage et
+    // autres champs lourds qui ne sont jamais affiches dans le feed.
     const raffles = await this.raffleModel
-      .find(match as any)
-      .populate('productId', 'title description imageUrl categoryId')
-      .sort(sort as any)
-      .limit(limit)
-      .lean()
+      .aggregate([
+        { $match: match },
+        { $sort: sort },
+        {
+          $project: {
+            status: 1,
+            productId: 1,
+            ticketPrice: 1,
+            currency: 1,
+            totalTickets: 1,
+            ticketsSold: 1,
+            startAt: 1,
+            endAt: 1,
+            createdAt: 1,
+          },
+        },
+        {
+          $lookup: {
+            from: 'products',
+            let: { productId: '$productId' },
+            pipeline: [
+              { $match: productMatch },
+              {
+                $project: {
+                  title: 1,
+                  description: 1,
+                  imageUrl: 1,
+                  categoryId: 1,
+                  region: 1,
+                },
+              },
+            ],
+            as: 'product',
+          },
+        },
+        { $unwind: '$product' },
+        { $limit: opts.limit },
+      ])
       .exec();
 
     return raffles.map((r: any) => {
-      const p = r.productId || {};
+      const p = r.product || {};
       const endAt = r.endAt ? new Date(r.endAt).toISOString() : undefined;
 
       let badgeText = 'LIVE';
@@ -373,12 +394,15 @@ export class RafflesService {
       .toUpperCase();
     const region = normalizeRegion(opts?.region) ?? undefined;
 
-    const [endingSoon, liveRows] = await Promise.all([
-      this.listPublic({ limit: 10, sort: 'endAt', category, region }),
-      this.listPublic({ limit: 30, sort: 'createdAt', category, region }),
-    ]);
+    const cacheKey = `raffles:home-feed:${JSON.stringify({ category, region })}`;
+    return this.queryCache.remember(cacheKey, async () => {
+      const [endingSoon, liveRows] = await Promise.all([
+        this.listPublic({ limit: 10, sort: 'endAt', category, region }),
+        this.listPublic({ limit: 30, sort: 'createdAt', category, region }),
+      ]);
 
-    return { endingSoon, liveRows };
+      return { endingSoon, liveRows };
+    });
   }
 
   async getPublicDetails(id: string) {
@@ -386,42 +410,46 @@ export class RafflesService {
       throw new BadRequestException('Invalid id');
     }
 
-    const r = await this.raffleModel
-      .findOne({
-        _id: id,
-        status: {
-          $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
-        },
-      })
-      .populate({
-        path: 'productId',
-        select: 'title description imageUrl categoryId status',
-      })
-      .lean()
-      .exec();
+    return this.queryCache.remember(`raffles:details:${id}`, async () => {
+      const r = await this.raffleModel
+        .findOne({
+          _id: id,
+          status: {
+            $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
+          },
+        })
+        .select(
+          '_id productId status ticketPrice currency totalTickets ticketsSold startAt endAt',
+        )
+        .populate({
+          path: 'productId',
+          select: 'title description imageUrl categoryId status',
+        })
+        .lean()
+        .exec();
 
-    if (!r) throw new NotFoundException('Raffle not found');
+      if (!r) throw new NotFoundException('Raffle not found');
 
-    const p: any = r.productId;
-    if (!p || String(p.status ?? '') !== 'PUBLISHED') {
-      throw new NotFoundException('Raffle not found');
-    }
+      const p: any = r.productId;
+      if (!p || String(p.status ?? '') !== 'PUBLISHED') {
+        throw new NotFoundException('Raffle not found');
+      }
 
-    return {
-      id: r._id.toString(),
-
-      title: p?.title ?? '',
-      description: p?.description ?? '',
-      imageUrl: p?.imageUrl ?? '',
-      ticketPrice: r.ticketPrice,
-      currency: r.currency ?? 'XAF',
-      sold: r.ticketsSold ?? 0,
-      total: r.totalTickets ?? 0,
-      startAt: r.startAt ? new Date(r.startAt).toISOString() : null,
-      endAt: r.endAt ? new Date(r.endAt).toISOString() : null,
-      endsAt: r.endAt ? new Date(r.endAt).toISOString() : null,
-      status: r.status,
-    };
+      return {
+        id: r._id.toString(),
+        title: p?.title ?? '',
+        description: p?.description ?? '',
+        imageUrl: p?.imageUrl ?? '',
+        ticketPrice: r.ticketPrice,
+        currency: r.currency ?? 'XAF',
+        sold: r.ticketsSold ?? 0,
+        total: r.totalTickets ?? 0,
+        startAt: r.startAt ? new Date(r.startAt).toISOString() : null,
+        endAt: r.endAt ? new Date(r.endAt).toISOString() : null,
+        endsAt: r.endAt ? new Date(r.endAt).toISOString() : null,
+        status: r.status,
+      };
+    });
   }
 
   async getStats(id: string) {
@@ -1708,6 +1736,7 @@ export class RafflesService {
           $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
         },
       })
+      .select('_id status productId winner')
       .populate({
         path: 'productId',
         select: 'title imageUrl status',
@@ -1772,56 +1801,109 @@ export class RafflesService {
   async listWinnersPublic(limit = 10) {
     const n = Math.min(50, Math.max(1, Number(limit) || 10));
 
-    const raffles: any[] = await this.raffleModel
-      .find({ status: RaffleStatus.DRAWN, 'winner.isPublished': true })
-      .populate({
-        path: 'productId',
-        select: 'title imageUrl status',
-        match: { status: 'PUBLISHED' },
-      })
-      .sort({ 'winner.drawnAt': -1 })
-      .limit(n)
-      .lean()
-      .exec();
+    return this.queryCache.remember(`raffles:winners:${n}`, async () => {
+      // Les anciens appels faisaient deux requetes supplementaires par
+      // gagnant. Les trois lookups ci-dessous sont executes par Mongo en un
+      // seul aller-retour, apres le tri et la limite indexes.
+      const rows: any[] = await this.raffleModel
+        .aggregate([
+          {
+            $match: {
+              status: RaffleStatus.DRAWN,
+              'winner.isPublished': true,
+            },
+          },
+          { $sort: { 'winner.drawnAt': -1 } },
+          { $limit: n },
+          {
+            $project: {
+              productId: 1,
+              winner: 1,
+            },
+          },
+          {
+            $lookup: {
+              from: 'products',
+              let: { productId: '$productId' },
+              pipeline: [
+                {
+                  $match: {
+                    $expr: { $eq: ['$_id', '$$productId'] },
+                    status: 'PUBLISHED',
+                  },
+                },
+                { $project: { title: 1, imageUrl: 1 } },
+              ],
+              as: 'product',
+            },
+          },
+          { $unwind: '$product' },
+          {
+            $lookup: {
+              from: 'tickets',
+              localField: 'winner.ticketId',
+              foreignField: '_id',
+              pipeline: [{ $project: { serial: 1 } }],
+              as: 'ticket',
+            },
+          },
+          {
+            $unwind: {
+              path: '$ticket',
+              preserveNullAndEmptyArrays: true,
+            },
+          },
+          {
+            $lookup: {
+              from: 'users',
+              localField: 'winner.userId',
+              foreignField: '_id',
+              pipeline: [
+                {
+                  $project: {
+                    username: 1,
+                    firstName: 1,
+                    lastName: 1,
+                    name: 1,
+                    fullName: 1,
+                    avatar: 1,
+                    avatarUrl: 1,
+                    photo: 1,
+                    photoUrl: 1,
+                  },
+                },
+              ],
+              as: 'user',
+            },
+          },
+          {
+            $unwind: {
+              path: '$user',
+              preserveNullAndEmptyArrays: true,
+            },
+          },
+        ])
+        .exec();
 
-    const out: any[] = [];
+      const data = rows.map((row: any, index: number) => {
+        const ticketSerial = row.ticket?.serial ?? null;
+        const badgeTone =
+          index === 0 ? 'gold' : index % 2 === 0 ? 'pink' : 'violet';
 
-    for (let i = 0; i < raffles.length; i++) {
-      const r = raffles[i];
-      const w = r.winner;
-      if (!w || !r.productId) continue;
-
-      const [ticket, user] = await Promise.all([
-        this.ticketModel.findById(w.ticketId).select('serial').lean().exec(),
-        this.userModel
-          .findById(w.userId)
-          .select(
-            'username firstName lastName name fullName avatar avatarUrl photo photoUrl',
-          )
-          .lean()
-          .exec(),
-      ]);
-
-      const p: any = r.productId || {};
-      const ticketSerial = ticket?.serial ?? null;
-
-      // simple tone pour ton UI
-      const badgeTone = i === 0 ? 'gold' : i % 2 === 0 ? 'pink' : 'violet';
-
-      out.push({
-        raffleId: String(r._id),
-        drawnAt: w.drawnAt,
-        prizeTitle: p?.title ?? null,
-        prizeImageUrl: p?.imageUrl ?? null,
-
-        winnerName: this.pickWinnerName(user),
-        avatar: this.pickAvatar(user),
-        ticketSerial,
-        ticketCode: this.toTicketCode(ticketSerial),
-        badgeTone,
+        return {
+          raffleId: String(row._id),
+          drawnAt: row.winner?.drawnAt,
+          prizeTitle: row.product?.title ?? null,
+          prizeImageUrl: row.product?.imageUrl ?? null,
+          winnerName: this.pickWinnerName(row.user),
+          avatar: this.pickAvatar(row.user),
+          ticketSerial,
+          ticketCode: this.toTicketCode(ticketSerial),
+          badgeTone,
+        };
       });
-    }
 
-    return { data: out };
+      return { data };
+    });
   }
 }

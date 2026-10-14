@@ -32,7 +32,7 @@ export const TicketSchema = SchemaFactory.createForClass(Ticket);
 TicketSchema.index({ raffleId: 1, serial: 1 }, { unique: true });
 TicketSchema.index({ raffleId: 1, userId: 1 });
 // Requetes dominantes: /tickets/me et l'agregation "mes participations".
-TicketSchema.index({ userId: 1, createdAt: -1 });
+TicketSchema.index({ userId: 1, createdAt: -1, _id: -1 });
 TicketSchema.index(
   { transactionId: 1, sequence: 1 },
   {
