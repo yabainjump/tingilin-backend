@@ -140,6 +140,12 @@ async function bootstrap() {
       maxAge: uploadsCacheMaxAge,
       setHeaders: (res) => {
         res.setHeader('X-Content-Type-Options', 'nosniff');
+        // Les fichiers /uploads sont des medias publics affiches par l'app web,
+        // notamment depuis localhost en developpement. La politique globale
+        // `same-site` les ferait bloquer par Chrome avec
+        // ERR_BLOCKED_BY_RESPONSE.NotSameSite malgré une reponse HTTP 200.
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        res.setHeader('Access-Control-Allow-Origin', '*');
       },
     }),
   );
