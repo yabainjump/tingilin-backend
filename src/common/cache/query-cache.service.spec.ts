@@ -45,4 +45,29 @@ describe('QueryCacheService', () => {
       cache.remember('fallback-key', async () => ({ ok: true })),
     ).resolves.toEqual({ ok: true });
   });
+
+  it('invalidates local and Redis entries by prefix', async () => {
+    const redis = {
+      get: jest.fn().mockResolvedValue(null),
+      set: jest.fn().mockResolvedValue('OK'),
+      scan: jest
+        .fn()
+        .mockResolvedValueOnce([
+          '0',
+          ['tingilin:query-cache:raffles:details:one'],
+        ]),
+      del: jest.fn().mockResolvedValue(1),
+    } as any;
+    const cache = new QueryCacheService(redis, config);
+    const load = jest.fn(async () => ({ version: 1 }));
+
+    await cache.remember('raffles:details:one', load);
+    await cache.invalidatePrefix('raffles:');
+    await cache.remember('raffles:details:one', load);
+
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(redis.del).toHaveBeenCalledWith(
+      'tingilin:query-cache:raffles:details:one',
+    );
+  });
 });

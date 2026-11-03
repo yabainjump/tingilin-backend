@@ -20,6 +20,7 @@ export class QueryCacheService {
   private readonly maxMemoryBytes: number;
   private memoryBytes = 0;
   private lastRedisWarningAt = 0;
+  private cacheEpoch = 0;
 
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis | null,
@@ -49,35 +50,82 @@ export class QueryCacheService {
     ttlMs = this.defaultTtlMs,
   ): Promise<T> {
     const normalizedTtl = Math.max(250, Math.floor(ttlMs));
-    const memoryValue = this.readMemory<T>(key);
-    if (memoryValue.hit) return memoryValue.value;
+    if (!this.redis) {
+      const memoryValue = this.readMemory<T>(key);
+      if (memoryValue.hit) return memoryValue.value;
+    }
 
     const pending = this.inFlight.get(key) as Promise<T> | undefined;
     if (pending) return pending;
 
-    const operation = this.loadAndCache(key, normalizedTtl, load);
+    const operation = this.loadAndCache(
+      key,
+      normalizedTtl,
+      this.cacheEpoch,
+      load,
+    );
     this.inFlight.set(key, operation);
 
     try {
       return await operation;
     } finally {
-      this.inFlight.delete(key);
+      if (this.inFlight.get(key) === operation) {
+        this.inFlight.delete(key);
+      }
+    }
+  }
+
+  async invalidatePrefix(prefix: string): Promise<void> {
+    const normalizedPrefix = String(prefix ?? '').trim();
+    if (!normalizedPrefix) return;
+
+    this.cacheEpoch += 1;
+    for (const key of Array.from(this.memory.keys())) {
+      if (key.startsWith(normalizedPrefix)) this.deleteMemory(key);
+    }
+    for (const key of Array.from(this.inFlight.keys())) {
+      if (key.startsWith(normalizedPrefix)) this.inFlight.delete(key);
+    }
+
+    if (!this.redis) return;
+
+    try {
+      let cursor = '0';
+      const match = `${this.redisKey(normalizedPrefix)}*`;
+      do {
+        const [nextCursor, keys] = await this.redis.scan(
+          cursor,
+          'MATCH',
+          match,
+          'COUNT',
+          100,
+        );
+        cursor = nextCursor;
+        if (keys.length > 0) await this.redis.del(...keys);
+      } while (cursor !== '0');
+    } catch (error) {
+      this.warnRedis(
+        `Redis cache invalidation failed: ${this.errorMessage(error)}`,
+      );
     }
   }
 
   private async loadAndCache<T>(
     key: string,
     ttlMs: number,
+    epoch: number,
     load: () => Promise<T>,
   ): Promise<T> {
     const redisValue = await this.readRedis<T>(key);
     if (redisValue.hit) {
-      this.writeMemory(
-        key,
-        redisValue.value,
-        ttlMs,
-        Buffer.byteLength(redisValue.serialized, 'utf8'),
-      );
+      if (!this.redis && epoch === this.cacheEpoch) {
+        this.writeMemory(
+          key,
+          redisValue.value,
+          ttlMs,
+          Buffer.byteLength(redisValue.serialized, 'utf8'),
+        );
+      }
       return redisValue.value;
     }
 
@@ -85,8 +133,8 @@ export class QueryCacheService {
     const serialized = JSON.stringify(value);
 
     const sizeBytes = Buffer.byteLength(serialized, 'utf8');
-    if (sizeBytes <= this.maxEntryBytes) {
-      this.writeMemory(key, value, ttlMs, sizeBytes);
+    if (epoch === this.cacheEpoch && sizeBytes <= this.maxEntryBytes) {
+      if (!this.redis) this.writeMemory(key, value, ttlMs, sizeBytes);
       await this.writeRedis(key, serialized, ttlMs);
     }
 

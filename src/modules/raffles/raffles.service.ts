@@ -82,6 +82,22 @@ export class RafflesService {
     return d;
   }
 
+  private async invalidatePublicRaffleCache(): Promise<void> {
+    await this.queryCache.invalidatePrefix('raffles:');
+  }
+
+  private async publishRaffleProduct(raffle: any): Promise<void> {
+    const productId = raffle?.productId?._id ?? raffle?.productId;
+    if (!productId || !Types.ObjectId.isValid(String(productId))) return;
+
+    await this.productModel
+      .updateOne(
+        { _id: new Types.ObjectId(String(productId)) },
+        { $set: { status: 'PUBLISHED' } },
+      )
+      .exec();
+  }
+
   /**
    * Fan-out de notifications par lots: evite de lancer N ecritures Mongo
    * simultanees (raffle de 2000 participants => 2000 ecritures concurrentes
@@ -482,7 +498,7 @@ export class RafflesService {
 
     const totalTickets = (dto as any).totalTickets ?? 1000;
 
-    return this.raffleModel.create({
+    const raffle = await this.raffleModel.create({
       productId: new Types.ObjectId(dto.productId),
       ticketPrice: dto.ticketPrice,
       currency: dto.currency ?? 'XAF',
@@ -497,6 +513,8 @@ export class RafflesService {
       participantsCount: 0,
       ...this.newDrawCommitment(),
     } as any);
+    await this.invalidatePublicRaffleCache();
+    return raffle;
   }
 
   async adminUpdate(id: string, dto: UpdateRaffleDto) {
@@ -522,6 +540,10 @@ export class RafflesService {
       .exec();
 
     if (!updated) throw new NotFoundException('Raffle not found');
+    if (updated.status === RaffleStatus.LIVE) {
+      await this.publishRaffleProduct(updated);
+    }
+    await this.invalidatePublicRaffleCache();
     return this.toAdminRafflePayload(updated as any);
   }
 
@@ -533,7 +555,10 @@ export class RafflesService {
       throw new BadRequestException('Only DRAFT can be started');
     }
     r.status = RaffleStatus.LIVE;
-    return r.save();
+    const updated = await r.save();
+    await this.publishRaffleProduct(updated);
+    await this.invalidatePublicRaffleCache();
+    return updated;
   }
 
   async adminClose(id: string) {
@@ -544,7 +569,9 @@ export class RafflesService {
       throw new BadRequestException('Only LIVE can be closed');
     }
     r.status = RaffleStatus.CLOSED;
-    return r.save();
+    const updated = await r.save();
+    await this.invalidatePublicRaffleCache();
+    return updated;
   }
 
   private toAdminRafflePayload(rawRaffle: any) {
@@ -635,6 +662,7 @@ export class RafflesService {
       }
     }
 
+    await this.invalidatePublicRaffleCache();
     return { ok: true, id };
   }
 
@@ -1439,6 +1467,8 @@ export class RafflesService {
       throw new BadRequestException('Winner already drawn');
     }
 
+    await this.invalidatePublicRaffleCache();
+
     return {
       raffleId: raffle._id.toString(),
       status: doc.status,
@@ -1508,6 +1538,7 @@ export class RafflesService {
             region: productRegion,
             realValue: dto.product.realValue ?? 0,
             createdBy: new Types.ObjectId(createdBy),
+            status: publishNow ? 'PUBLISHED' : 'DRAFT',
           },
         ],
         { session },
@@ -1537,6 +1568,7 @@ export class RafflesService {
       );
 
       await session.commitTransaction();
+      await this.invalidatePublicRaffleCache();
 
       return {
         product: createdProduct,

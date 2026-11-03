@@ -19,6 +19,8 @@ describe('RafflesService', () => {
   let productModelMock: any;
   let ticketModelMock: any;
   let notificationsMock: any;
+  let queryCacheMock: any;
+  let connectionMock: any;
 
   beforeEach(async () => {
     const queryMock = {
@@ -38,6 +40,7 @@ describe('RafflesService', () => {
       }),
       findOneAndUpdate: jest.fn(),
       findByIdAndUpdate: jest.fn(),
+      updateOne: jest.fn(),
       create: jest.fn(),
     };
 
@@ -48,6 +51,7 @@ describe('RafflesService', () => {
       aggregate: jest.fn(),
       findOneAndUpdate: jest.fn(),
       findByIdAndUpdate: jest.fn(),
+      updateOne: jest.fn(),
       create: jest.fn(),
     };
 
@@ -78,10 +82,14 @@ describe('RafflesService', () => {
       createOnce: jest.fn(),
     };
 
-    const queryCacheMock = {
+    queryCacheMock = {
       remember: jest.fn(async (_key: string, load: () => Promise<unknown>) =>
         load(),
       ),
+      invalidatePrefix: jest.fn().mockResolvedValue(undefined),
+    };
+    connectionMock = {
+      startSession: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -94,7 +102,7 @@ describe('RafflesService', () => {
         { provide: getModelToken(Transaction.name), useValue: modelMock },
         { provide: getModelToken(Participation.name), useValue: modelMock },
         { provide: ProductsService, useValue: {} },
-        { provide: getConnectionToken(), useValue: {} },
+        { provide: getConnectionToken(), useValue: connectionMock },
         { provide: NotificationsService, useValue: notificationsMock },
         { provide: QueryCacheService, useValue: queryCacheMock },
       ],
@@ -168,6 +176,80 @@ describe('RafflesService', () => {
         ticketCode: '1234',
       }),
     ]);
+  });
+
+  it('publishes the product when a raffle is created directly LIVE', async () => {
+    const productId = new Types.ObjectId();
+    const raffleId = new Types.ObjectId();
+    const session = {
+      startTransaction: jest.fn(),
+      commitTransaction: jest.fn().mockResolvedValue(undefined),
+      abortTransaction: jest.fn().mockResolvedValue(undefined),
+      endSession: jest.fn(),
+    };
+    connectionMock.startSession.mockResolvedValue(session);
+    productModelMock.create.mockResolvedValue([{ _id: productId }]);
+    raffleModelMock.create.mockResolvedValue([{ _id: raffleId }]);
+
+    await service.adminCreateRaffle(
+      {
+        publishNow: true,
+        product: {
+          title: 'Phone',
+          imageUrl: '/uploads/products/phone.webp',
+          categoryId: 'GENERAL',
+        },
+        raffle: {
+          ticketPrice: 100,
+          totalTickets: 100,
+          currency: 'XAF',
+          endAt: new Date(Date.now() + 86_400_000).toISOString(),
+        },
+      },
+      new Types.ObjectId().toString(),
+    );
+
+    expect(productModelMock.create.mock.calls[0][0][0]).toEqual(
+      expect.objectContaining({ status: 'PUBLISHED' }),
+    );
+    expect(raffleModelMock.create.mock.calls[0][0][0]).toEqual(
+      expect.objectContaining({ status: RaffleStatus.LIVE }),
+    );
+    expect(queryCacheMock.invalidatePrefix).toHaveBeenCalledWith('raffles:');
+  });
+
+  it('publishes the product and invalidates public cache when reopening LIVE', async () => {
+    const raffleId = new Types.ObjectId();
+    const productId = new Types.ObjectId();
+    const updated = {
+      _id: raffleId,
+      status: RaffleStatus.LIVE,
+      productId: { _id: productId, title: 'Phone' },
+      toObject: () => ({
+        _id: raffleId,
+        status: RaffleStatus.LIVE,
+        productId: { _id: productId, title: 'Phone' },
+      }),
+    };
+    raffleModelMock.findByIdAndUpdate.mockReturnValue({
+      populate: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue(updated),
+      }),
+    });
+    productModelMock.updateOne.mockReturnValue({
+      exec: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+    });
+
+    await service.adminUpdate(raffleId.toString(), {
+      status: RaffleStatus.LIVE,
+      endAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+
+    expect(productModelMock.updateOne).toHaveBeenCalledWith(
+      { _id: productId },
+      { $set: { status: 'PUBLISHED' } },
+    );
+    expect(queryCacheMock.invalidatePrefix).toHaveBeenCalledWith('raffles:');
   });
 
   it('drawWinner claims the draw atomically and records a verifiable proof', async () => {
