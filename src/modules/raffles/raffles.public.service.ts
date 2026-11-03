@@ -80,7 +80,7 @@ export class RafflesPublicService {
       .filter((x): x is Types.ObjectId => !!x);
 
     const products = await this.productModel
-      .find({ _id: { $in: productIds }, status: 'PUBLISHED' })
+      .find({ _id: { $in: productIds } })
       .select({ title: 1, images: 1, status: 1 })
       .lean<ProductLean[]>()
       .exec();
@@ -134,7 +134,7 @@ export class RafflesPublicService {
           .lean()
           .exec()
       : null;
-    if (!product || String(product.status ?? '') !== 'PUBLISHED') {
+    if (!product) {
       throw new NotFoundException('Raffle not found');
     }
     const endAtMs = raffle.endAt ? new Date(raffle.endAt).getTime() : null;
@@ -171,12 +171,12 @@ export class RafflesPublicService {
       .exec();
 
     if (!raffle) throw new NotFoundException('Raffle not found');
-    const publishedProduct = raffle.productId
+    const existingProduct = raffle.productId
       ? await this.productModel
-          .exists({ _id: raffle.productId, status: 'PUBLISHED' })
+          .exists({ _id: raffle.productId })
           .exec()
       : null;
-    if (!publishedProduct) throw new NotFoundException('Raffle not found');
+    if (!existingProduct) throw new NotFoundException('Raffle not found');
 
     const endAtMs = raffle.endAt ? new Date(raffle.endAt).getTime() : null;
     const remainingMs = endAtMs ? Math.max(0, endAtMs - Date.now()) : null;
@@ -208,7 +208,7 @@ export class RafflesPublicService {
           .lean()
           .exec()
       : null;
-    if (!product || String(product.status ?? '') !== 'PUBLISHED') {
+    if (!product) {
       throw new NotFoundException('Raffle not found');
     }
 

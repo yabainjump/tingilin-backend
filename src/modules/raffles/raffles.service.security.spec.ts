@@ -51,7 +51,7 @@ describe('RafflesService purchase reservation security', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('excludes draft raffles and unpublished products from the home feed', async () => {
+  it('excludes draft raffles from the home feed without hiding legacy products', async () => {
     const exec = jest.fn().mockResolvedValue([]);
     const find = jest.fn().mockReturnValue({
       sort: jest.fn().mockReturnValue({
@@ -60,11 +60,6 @@ describe('RafflesService purchase reservation security', () => {
     });
     const context = Object.assign(Object.create(RafflesService.prototype), {
       raffleModel: { find },
-      productModel: {
-        distinct: jest.fn().mockReturnValue({
-          exec: jest.fn().mockResolvedValue(['published-product-id']),
-        }),
-      },
     });
 
     await RafflesService.prototype.listForHome.call(context as RafflesService);
@@ -74,7 +69,6 @@ describe('RafflesService purchase reservation security', () => {
         status: {
           $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
         },
-        productId: { $in: ['published-product-id'] },
       }),
     );
   });

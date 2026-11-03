@@ -306,7 +306,6 @@ export class RafflesService {
 
     const productMatch: Record<string, unknown> = {
       $expr: { $eq: ['$_id', '$$productId'] },
-      status: 'PUBLISHED',
     };
     if (opts.category && opts.category !== 'ALL') {
       productMatch.categoryId = opts.category;
@@ -447,7 +446,10 @@ export class RafflesService {
       if (!r) throw new NotFoundException('Raffle not found');
 
       const p: any = r.productId;
-      if (!p || String(p.status ?? '') !== 'PUBLISHED') {
+      // Le statut de la raffle est la source de verite pour sa publication.
+      // D'anciennes raffles LIVE peuvent encore pointer vers un produit DRAFT;
+      // les masquer ici rend alors toute la partie utilisateur vide.
+      if (!p) {
         throw new NotFoundException('Raffle not found');
       }
 
@@ -1239,7 +1241,6 @@ export class RafflesService {
       .populate({
         path: 'productId',
         select: 'status',
-        match: { status: 'PUBLISHED' },
       })
       .select('+drawServerSeed')
       .lean()
@@ -1652,15 +1653,10 @@ export class RafflesService {
     const now = new Date();
     const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
     const minEndAt = new Date(Date.now() - sevenDaysMs);
-    const publishedProductIds = await this.productModel
-      .distinct('_id', { status: 'PUBLISHED' })
-      .exec();
-
     const q: any = {
       status: {
         $in: [RaffleStatus.LIVE, RaffleStatus.CLOSED, RaffleStatus.DRAWN],
       },
-      productId: { $in: publishedProductIds },
       endAt: { $gte: minEndAt },
       $or: [{ startAt: null }, { startAt: { $lte: now } }],
     };
@@ -1772,7 +1768,6 @@ export class RafflesService {
       .populate({
         path: 'productId',
         select: 'title imageUrl status',
-        match: { status: 'PUBLISHED' },
       })
       .exec();
 
@@ -1861,7 +1856,6 @@ export class RafflesService {
                 {
                   $match: {
                     $expr: { $eq: ['$_id', '$$productId'] },
-                    status: 'PUBLISHED',
                   },
                 },
                 { $project: { title: 1, imageUrl: 1 } },

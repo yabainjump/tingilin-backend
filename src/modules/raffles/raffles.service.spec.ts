@@ -150,6 +150,18 @@ describe('RafflesService', () => {
     expect(productMatch.categoryId).toBeUndefined();
   });
 
+  it('uses the public raffle status as visibility source of truth', async () => {
+    await service.listPublic({ sort: 'createdAt', limit: 10 });
+
+    const pipeline = raffleModelMock.aggregate.mock.calls.at(-1)?.[0];
+    const productMatch = pipeline[3].$lookup.pipeline[0].$match;
+
+    expect(productMatch).toEqual({
+      $expr: { $eq: ['$_id', '$$productId'] },
+    });
+    expect(productMatch.status).toBeUndefined();
+  });
+
   it('listWinnersPublic should resolve winners with one aggregation', async () => {
     const raffleId = new Types.ObjectId();
     raffleModelMock.aggregate.mockReturnValueOnce({
