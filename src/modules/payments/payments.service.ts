@@ -857,6 +857,7 @@ export class PaymentsService {
     // configuration error leaves an unusable idempotent intent without checkout URL.
     if (provider === 'DIGIKUNTZ') {
       this.digikuntz.assertConfigured();
+      await this.digikuntz.assertAccessible();
     }
     let digikuntzInput:
       | {

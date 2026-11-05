@@ -20,6 +20,7 @@ describe('PaymentsService', () => {
     getTransaction: jest.Mock;
     recoverPayin: jest.Mock;
     assertConfigured: jest.Mock;
+    assertAccessible: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -51,6 +52,7 @@ describe('PaymentsService', () => {
       getTransaction: jest.fn(),
       recoverPayin: jest.fn(),
       assertConfigured: jest.fn(),
+      assertAccessible: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({

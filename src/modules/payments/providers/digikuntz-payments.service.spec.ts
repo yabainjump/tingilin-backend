@@ -37,6 +37,45 @@ describe('DigikuntzPaymentsService', () => {
     };
   };
 
+  it('validates provider access once within the cache window', async () => {
+    const { service, get } = createService();
+    get.mockReturnValue(
+      of({
+        data: { balance: 85000, currency: 'XAF' },
+        headers: { 'content-type': 'application/json' },
+      } as AxiosResponse),
+    );
+
+    await service.assertAccessible();
+    await service.assertAccessible();
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith(
+      'https://app.digikuntz.com/dev/balance',
+      {
+        headers: {
+          Accept: 'application/json',
+          'x-user-id': 'account-user-id',
+          'x-secret-key': 'SK-secret',
+        },
+      },
+    );
+  });
+
+  it('rejects disabled or invalid provider credentials returned as text', async () => {
+    const { service, get } = createService();
+    get.mockReturnValue(
+      of({
+        data: 'invalid credentials or API access desabled or Unauthorize',
+        headers: { 'content-type': 'text/html' },
+      } as AxiosResponse),
+    );
+
+    await expect(service.assertAccessible()).rejects.toThrow(
+      ServiceUnavailableException,
+    );
+  });
+
   it('sends the documented pay-in request and flattens response data', async () => {
     const { service, post } = createService();
     post.mockReturnValue(

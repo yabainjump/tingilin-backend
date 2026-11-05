@@ -65,6 +65,9 @@ export class DigikuntzPaymentsService {
   private readonly secretKey: string;
   private readonly callbackUrl: string;
   private readonly checkoutHosts: Set<string>;
+  private accessValidatedAt = 0;
+  private accessValidationInFlight?: Promise<void>;
+  private readonly accessValidationTtlMs = 60_000;
 
   constructor(
     private readonly http: HttpService,
@@ -154,6 +157,66 @@ export class DigikuntzPaymentsService {
       throw new ServiceUnavailableException(
         'Invalid payment config: DIGIKUNTZ_BASE_URL must be exactly https://app.digikuntz.com/dev',
       );
+    }
+  }
+
+  async assertAccessible(): Promise<void> {
+    this.assertConfigured();
+
+    if (Date.now() - this.accessValidatedAt < this.accessValidationTtlMs) {
+      return;
+    }
+    if (this.accessValidationInFlight) {
+      return this.accessValidationInFlight;
+    }
+
+    this.accessValidationInFlight = this.validateProviderAccess().finally(
+      () => {
+        this.accessValidationInFlight = undefined;
+      },
+    );
+    return this.accessValidationInFlight;
+  }
+
+  private async validateProviderAccess(): Promise<void> {
+    try {
+      const response = await firstValueFrom(
+        this.http.get(`${this.baseUrl}/balance`, {
+          headers: this.headers(),
+        }),
+      );
+      const payload = this.decodeJsonPayload(response.data);
+      this.throwIfAccessRejected(payload);
+
+      if (typeof payload === 'string') {
+        throw new BadGatewayException(
+          'Digikuntz access check returned an unreadable response',
+        );
+      }
+
+      const record = this.asRecord(payload);
+      if (!Object.prototype.hasOwnProperty.call(record, 'balance')) {
+        throw new BadGatewayException(
+          'Digikuntz access check returned an unexpected response',
+        );
+      }
+
+      this.accessValidatedAt = Date.now();
+    } catch (error: unknown) {
+      if (error instanceof HttpException) throw error;
+
+      const response = this.asRecord(this.asRecord(error).response);
+      const status = Number(response.status ?? 0);
+      if (status === 401 || status === 403) {
+        this.logger.error(
+          `Digikuntz rejected API access during credential check; status=${status}`,
+        );
+        throw new ServiceUnavailableException(
+          'Payment provider is temporarily unavailable',
+        );
+      }
+
+      this.throwUpstreamError('access check', error);
     }
   }
 
@@ -287,6 +350,21 @@ export class DigikuntzPaymentsService {
     }
 
     return '';
+  }
+
+  private throwIfAccessRejected(payload: unknown): void {
+    if (typeof payload !== 'string') return;
+
+    if (
+      /invalid credentials|invalid user status|api access (?:is )?disabled|api access desabled|unauthori[sz]e/i.test(
+        payload,
+      )
+    ) {
+      this.logger.error('Digikuntz rejected configured API credentials');
+      throw new ServiceUnavailableException(
+        'Payment provider is temporarily unavailable',
+      );
+    }
   }
 
   private throwUpstreamError(action: string, e: unknown): never {
@@ -513,6 +591,7 @@ export class DigikuntzPaymentsService {
       );
       const decoded = this.decodeJsonPayload(response.data);
       if (typeof decoded === 'string') {
+        this.throwIfAccessRejected(decoded);
         const contentType = String(response.headers?.['content-type'] ?? '')
           .trim()
           .toLowerCase();
@@ -655,6 +734,7 @@ export class DigikuntzPaymentsService {
         .toLowerCase();
       const payload = this.decodeJsonPayload(res.data);
       if (typeof payload === 'string') {
+        this.throwIfAccessRejected(payload);
         this.logger.warn(
           `Digikuntz createPayin returned non-JSON content; status=${Number(res.status ?? 0) || 'unknown'}; contentType=${contentType || 'unknown'}; baseUrl=${this.baseUrl}; ${this.htmlSummary(payload, res)}`,
         );
@@ -733,6 +813,7 @@ export class DigikuntzPaymentsService {
       const payload = this.decodeJsonPayload(res.data);
 
       if (typeof payload === 'string') {
+        this.throwIfAccessRejected(payload);
         const contentType = String(res.headers?.['content-type'] ?? '')
           .trim()
           .toLowerCase();
@@ -797,7 +878,9 @@ export class DigikuntzPaymentsService {
           params: { transactionId },
         }),
       );
-      return this.normalizeTransactionResponse(res.data);
+      const payload = this.decodeJsonPayload(res.data);
+      this.throwIfAccessRejected(payload);
+      return this.normalizeTransactionResponse(payload);
     } catch (e: unknown) {
       this.throwUpstreamError('getTransaction', e);
     }
