@@ -252,6 +252,11 @@ export class DigikuntzPaymentsService {
     return '';
   }
 
+  private hostedCheckoutPhone(value: string): string {
+    const phone = value.trim();
+    return /^2376\d{8}$/.test(phone) ? phone.slice(3) : phone;
+  }
+
   private transactionRecords(payload: unknown): Record<string, unknown>[] {
     const root = this.asRecord(payload);
     if (Object.keys(root).length === 0) return [];
@@ -350,6 +355,21 @@ export class DigikuntzPaymentsService {
     }
 
     return '';
+  }
+
+  private isDirectChargeDisabledError(error: unknown): boolean {
+    const response = this.asRecord(this.asRecord(error).response);
+    if (Number(response.status ?? 0) !== 503) return false;
+
+    const payload = this.decodeJsonPayload(response.data);
+    const record = this.asRecord(payload);
+    const code = this.asString(record.code).toUpperCase();
+    const message = this.providerErrorMessage(payload);
+
+    return (
+      code === 'DIRECT_CHARGE_DISABLED' ||
+      /direct mobile-money charge is currently disabled/i.test(message)
+    );
   }
 
   private throwIfAccessRejected(payload: unknown): void {
@@ -720,7 +740,7 @@ export class DigikuntzPaymentsService {
         estimation: input.amount,
         raisonForTransfer: input.reason,
         userEmail: input.userEmail,
-        userPhone: input.userPhone,
+        userPhone: this.hostedCheckoutPhone(input.userPhone),
         userCountry: input.userCountry,
         senderName: input.senderName,
         callbackUrl,
@@ -865,6 +885,19 @@ export class DigikuntzPaymentsService {
       }
       return normalized;
     } catch (e: unknown) {
+      if (this.isDirectChargeDisabledError(e)) {
+        this.logger.warn(
+          'Digikuntz direct charge is disabled; falling back to hosted checkout',
+        );
+        return this.createPayin({
+          amount: input.amount,
+          reason: input.reason,
+          userEmail: input.userEmail,
+          userPhone: input.userPhone,
+          userCountry: input.userCountry,
+          senderName: input.senderName,
+        });
+      }
       this.throwUpstreamError('direct-charge', e);
     }
   }

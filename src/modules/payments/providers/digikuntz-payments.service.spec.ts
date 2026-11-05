@@ -2,7 +2,7 @@ import { ServiceUnavailableException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { AxiosResponse } from 'axios';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import {
   DigikuntzPaymentsService,
   normalizeDigikuntzStatus,
@@ -184,6 +184,76 @@ describe('DigikuntzPaymentsService', () => {
       paymentWithTaxes: '5250',
     });
     expect(result.paymentLink).toBeUndefined();
+  });
+
+  it('falls back to hosted checkout when direct charge is disabled', async () => {
+    const { service, post } = createService();
+    post
+      .mockReturnValueOnce(
+        throwError(() => ({
+          response: {
+            status: 503,
+            data: {
+              statusCode: 503,
+              code: 'DIRECT_CHARGE_DISABLED',
+              message: 'Direct mobile-money charge is currently disabled.',
+            },
+          },
+        })),
+      )
+      .mockReturnValueOnce(
+        of({
+          data: {
+            id: 'hosted-provider-id',
+            status: 'payin_pending',
+            data: {
+              transactionRef: 'IN123#250101120001',
+              paymentLink:
+                'https://checkout.flutterwave.com/v3/hosted/pay/fallback',
+            },
+          },
+          headers: { 'content-type': 'application/json' },
+        } as AxiosResponse),
+      );
+
+    const result = await service.createDirectCharge({
+      amount: 5000,
+      reason: 'Tingilin payment ABC123 x1',
+      userEmail: 'user@example.com',
+      userPhone: '237691224472',
+      userCountry: 'Cameroon',
+      senderName: 'Test User',
+      paymentMethodCode: 'MTN',
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenNthCalledWith(
+      2,
+      'https://app.digikuntz.com/dev/transaction',
+      {
+        estimation: 5000,
+        raisonForTransfer: 'Tingilin payment ABC123 x1',
+        userEmail: 'user@example.com',
+        userPhone: '691224472',
+        userCountry: 'Cameroon',
+        senderName: 'Test User',
+        callbackUrl: 'https://tinguilin.yaba-in.com/tabs/participations',
+      },
+      {
+        headers: {
+          Accept: 'application/json',
+          'x-user-id': 'account-user-id',
+          'x-secret-key': 'SK-secret',
+        },
+      },
+    );
+    expect(result).toMatchObject({
+      id: 'hosted-provider-id',
+      status: 'payin_pending',
+      transactionRef: 'IN123#250101120001',
+      paymentLink:
+        'https://checkout.flutterwave.com/v3/hosted/pay/fallback',
+    });
   });
 
   it('removes insecure checkout aliases from nested response data', async () => {
