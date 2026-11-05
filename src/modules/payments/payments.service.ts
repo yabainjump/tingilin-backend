@@ -477,9 +477,10 @@ export class PaymentsService {
   }
 
   private normalizePhone(input?: string | null): string {
-    return String(input ?? '')
-      .replace(/\s|-/g, '')
-      .trim();
+    let digits = String(input ?? '').replace(/\D/g, '');
+    if (digits.startsWith('00237')) digits = digits.slice(2);
+    if (/^6\d{8}$/.test(digits)) digits = `237${digits}`;
+    return /^2376\d{8}$/.test(digits) ? digits : '';
   }
 
   private normalizeDigikuntzCountry(input?: string | null): string {
@@ -612,6 +613,12 @@ export class PaymentsService {
       quantity: Number(tx.quantity ?? 0),
       ticketUnitPrice,
       paymentLink: tx.paymentLink ?? undefined,
+      paymentMethodCode: tx.paymentMethodCode ?? undefined,
+      paymentFlow:
+        tx.provider === 'DIGIKUNTZ' && tx.paymentMethodCode
+          ? 'DIRECT_CHARGE'
+          : 'HOSTED_CHECKOUT',
+      providerStatus: tx.rawProviderStatus ?? undefined,
       paymentWithTaxes:
         tx.paymentWithTaxes !== undefined
           ? Number(tx.paymentWithTaxes)
@@ -684,7 +691,12 @@ export class PaymentsService {
       reason: this.buildDigikuntzReason(tx),
     });
     const details = recovered ? this.digikuntzPayinDetails(recovered) : null;
-    if (!details?.paymentLink) {
+    if (
+      !details ||
+      (!details.providerTransactionId &&
+        !details.providerRef &&
+        !details.paymentLink)
+    ) {
       throw new ConflictException(
         'Cette tentative de paiement est encore en cours de récupération. Patiente quelques secondes puis réessaie.',
       );
@@ -692,7 +704,7 @@ export class PaymentsService {
 
     tx.providerTransactionId = details.providerTransactionId || undefined;
     tx.providerRef = details.providerRef || undefined;
-    tx.paymentLink = details.paymentLink;
+    tx.paymentLink = details.paymentLink || tx.paymentLink;
     tx.paymentWithTaxes = details.paymentWithTaxes;
     tx.rawProviderStatus = details.providerStatus;
     await tx.save();
@@ -852,6 +864,7 @@ export class PaymentsService {
           userPhone: string;
           userCountry: string;
           senderName: string;
+          paymentMethodCode: 'ORANGE' | 'MTN';
         }
       | undefined;
 
@@ -881,10 +894,17 @@ export class PaymentsService {
         this.firstNonEmpty(dto.userCountry, defaultCountry),
       );
       const senderName = this.firstNonEmpty(dto.senderName, fallbackSenderName);
+      const paymentMethodCode = dto.paymentMethodCode;
 
-      if (!userEmail || !userPhone || !userCountry || !senderName) {
+      if (
+        !userEmail ||
+        !userPhone ||
+        userCountry !== 'Cameroon' ||
+        !senderName ||
+        !paymentMethodCode
+      ) {
         throw new BadRequestException(
-          'DIGIKUNTZ requires userEmail, userPhone, userCountry, senderName',
+          'DIGIKUNTZ direct charge requires a valid Cameroon phone, email, sender name, country and payment method',
         );
       }
 
@@ -893,6 +913,7 @@ export class PaymentsService {
         userPhone,
         userCountry,
         senderName,
+        paymentMethodCode,
       };
     }
 
@@ -906,7 +927,12 @@ export class PaymentsService {
         .sort({ createdAt: -1 })
         .exec();
       if (existing) {
-        if (existing.provider === 'DIGIKUNTZ' && !existing.paymentLink) {
+        if (
+          existing.provider === 'DIGIKUNTZ' &&
+          !existing.providerTransactionId &&
+          !existing.providerRef &&
+          !existing.paymentLink
+        ) {
           return this.recoverIncompleteDigikuntzIntent(existing, unit);
         }
         return this.buildIntentResponse(existing, unit, true);
@@ -951,6 +977,7 @@ export class PaymentsService {
         provider,
         status: 'PENDING',
         idempotencyKey: idempotencyKey ?? undefined,
+        paymentMethodCode: digikuntzInput?.paymentMethodCode,
       });
     } catch (error) {
       if (idempotencyKey && this.isDuplicateKeyError(error, 'idempotencyKey')) {
@@ -963,7 +990,12 @@ export class PaymentsService {
           .exec();
 
         if (existing) {
-          if (existing.provider === 'DIGIKUNTZ' && !existing.paymentLink) {
+          if (
+            existing.provider === 'DIGIKUNTZ' &&
+            !existing.providerTransactionId &&
+            !existing.providerRef &&
+            !existing.paymentLink
+          ) {
             return this.recoverIncompleteDigikuntzIntent(existing, unit);
           }
           return this.buildIntentResponse(existing, unit, true);
@@ -974,13 +1006,14 @@ export class PaymentsService {
     }
 
     if (provider === 'DIGIKUNTZ') {
-      const payin = await this.digikuntz.createPayin({
+      const payin = await this.digikuntz.createDirectCharge({
         amount,
         reason: this.buildDigikuntzReason(tx),
         userEmail: digikuntzInput!.userEmail,
         userPhone: digikuntzInput!.userPhone,
         userCountry: digikuntzInput!.userCountry,
         senderName: digikuntzInput!.senderName,
+        paymentMethodCode: digikuntzInput!.paymentMethodCode,
       });
       const payinData =
         payin?.data && typeof payin.data === 'object' ? payin.data : {};
@@ -1020,7 +1053,7 @@ export class PaymentsService {
           0,
       );
 
-      if (!paymentLink) {
+      if (!providerTransactionId && !providerRef && !paymentLink) {
         const providerMessage = this.firstNonEmpty(
           payin?.message,
           payin?.detail,
@@ -1030,7 +1063,7 @@ export class PaymentsService {
           .replace(/[\r\n\t]+/g, ' ')
           .slice(0, 180);
         throw new BadGatewayException(
-          `Digikuntz createPayin did not return a valid payment link${providerMessage ? `: ${providerMessage}` : ''}`,
+          `Digikuntz direct charge did not return a valid transaction${providerMessage ? `: ${providerMessage}` : ''}`,
         );
       }
 

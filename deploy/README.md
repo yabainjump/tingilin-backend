@@ -79,7 +79,19 @@ HTTP_REQUEST_TIMEOUT_MS=120000
 
 # CORS: all frontends that call the API
 CORS_ORIGINS=https://tinguilin.yaba-in.com,https://admin.tinguilin.yaba-in.com,https://app.digikuntz.com
+
+# Digikuntz direct charge (values from the provider dashboard)
+DIGIKUNTZ_BASE_URL=https://app.digikuntz.com/dev
+DIGIKUNTZ_USER_ID=<server-only-user-id>
+DIGIKUNTZ_SECRET_KEY=<server-only-secret-key>
+DIGIKUNTZ_CALLBACK_URL=https://tinguilin.yaba-in.com/tabs/participations
+DIGIKUNTZ_CHECKOUT_HOSTS=checkout.flutterwave.com,app.digikuntz.com
+DIGIKUNTZ_WEBHOOK_SIGNATURE_MODE=provider-verify
 ```
+
+Keep the Digikuntz identifiers exclusively on the backend server. With
+`provider-verify`, every webhook status is re-read from Digikuntz before a
+ticket is issued; no undocumented webhook signature is trusted.
 
 `APP_PORT=3001` is the base port. PM2 increments ports automatically:
 `3001`, `3002`, `3003`, etc.

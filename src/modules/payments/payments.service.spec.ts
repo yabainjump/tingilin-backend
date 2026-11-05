@@ -16,6 +16,7 @@ describe('PaymentsService', () => {
   let configService: { get: jest.Mock };
   let txModelMock: Record<string, jest.Mock>;
   let digikuntzMock: {
+    createDirectCharge: jest.Mock;
     getTransaction: jest.Mock;
     recoverPayin: jest.Mock;
     assertConfigured: jest.Mock;
@@ -46,6 +47,7 @@ describe('PaymentsService', () => {
       }),
     };
     digikuntzMock = {
+      createDirectCharge: jest.fn(),
       getTransaction: jest.fn(),
       recoverPayin: jest.fn(),
       assertConfigured: jest.fn(),
@@ -170,5 +172,51 @@ describe('PaymentsService', () => {
       paymentLink: 'https://checkout.example.com/pay/recovered',
       idempotent: true,
     });
+  });
+
+  it('repairs a direct-charge intent even when no checkout link exists', async () => {
+    const tx = {
+      _id: { toString: () => '665f1a2b3c4d5e6f7a8b9c0d' },
+      provider: 'DIGIKUNTZ',
+      amount: 5000,
+      currency: 'XAF',
+      quantity: 1,
+      status: 'PENDING',
+      paymentMethodCode: 'MTN',
+      paymentLink: undefined,
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    digikuntzMock.recoverPayin.mockResolvedValue({
+      id: 'direct-provider-id',
+      status: 'payin_pending',
+      transactionRef: 'DIRECT-REF',
+      paymentWithTaxes: '5250',
+    });
+
+    const result = await (service as any).recoverIncompleteDigikuntzIntent(
+      tx,
+      5000,
+    );
+
+    expect(tx).toMatchObject({
+      providerTransactionId: 'direct-provider-id',
+      providerRef: 'DIRECT-REF',
+      paymentWithTaxes: 5250,
+      rawProviderStatus: 'payin_pending',
+    });
+    expect(result).toMatchObject({
+      paymentFlow: 'DIRECT_CHARGE',
+      paymentMethodCode: 'MTN',
+      idempotent: true,
+    });
+  });
+
+  it.each([
+    ['691224472', '237691224472'],
+    ['+237 691 224 472', '237691224472'],
+    ['00237-691-224-472', '237691224472'],
+    ['1234', ''],
+  ])('normalizes Cameroon phone %s', (input, expected) => {
+    expect((service as any).normalizePhone(input)).toBe(expected);
   });
 });

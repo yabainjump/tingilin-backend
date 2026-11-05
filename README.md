@@ -72,6 +72,7 @@ copy .env.example .env
 | `DIGIKUNTZ_USER_ID`                  | Oui (si provider DIGIKUNTZ) | -                                    | Identifiant du compte, header `x-user-id`                                        |
 | `DIGIKUNTZ_SECRET_KEY`               | Oui (si provider DIGIKUNTZ) | -                                    | Clé API secrète, header `x-secret-key`                                           |
 | `DIGIKUNTZ_CALLBACK_URL`             | Oui (si provider DIGIKUNTZ) | -                                    | Retour utilisateur après le checkout                                             |
+| `DIGIKUNTZ_CHECKOUT_HOSTS`           | Non                         | `checkout.flutterwave.com,app.digikuntz.com` | Hôtes HTTPS autorisés pour le checkout de secours                         |
 | `DIGIKUNTZ_WEBHOOK_SIGNATURE_MODE`   | Non                         | `provider-verify`                    | Revérifie chaque webhook auprès de Digikuntz                                     |
 
 `GOOGLE_CLIENT_ID` doit contenir le meme Client OAuth **Application Web** que
@@ -79,9 +80,15 @@ copy .env.example .env
 l'emetteur, l'expiration et l'email verifie avant de creer ou connecter un
 compte. Ne pas utiliser le Client OAuth Android comme audience.
 
-Documentation officielle vérifiée : https://payments.digikuntz.com/api-doc.
-Le portail et la documentation sont servis par `payments.digikuntz.com`, tandis
-que l'API appelée par les routes `/dev/*` est servie par `app.digikuntz.com`.
+Documentation officielle vérifiée : https://app.digikuntz.com/dev/api-doc.
+Le paiement utilisateur utilise `POST /dev/direct-charge` avec les headers
+serveur `x-user-id` et `x-secret-key`. Les clés ne doivent jamais être placées
+dans l'application Ionic. Le code de méthode est `ORANGE` ou `MTN`, et le
+numéro camerounais est envoyé au format international `2376XXXXXXXX`.
+
+Une réponse directe valide peut ne contenir aucun `paymentLink` : l'utilisateur
+confirme alors la demande sur son téléphone. Si Digikuntz renvoie son checkout
+de secours, seuls les hôtes HTTPS de `DIGIKUNTZ_CHECKOUT_HOSTS` sont acceptés.
 
 Dans l'espace développeur Digikuntz, configure l'URL webhook de production :
 `https://backend.tinguilin.yaba-in.com/api/v1/payments/digikuntz/webhook`.
@@ -227,7 +234,7 @@ Tous les endpoints sont prefixes par `/api/v1`.
 
 ### Payments (JWT)
 
-- `POST /payments/intent`
+- `POST /payments/intent` (`paymentMethodCode: ORANGE | MTN`; déclenche le direct charge Digikuntz)
 - `POST /payments/mock/confirm`
 - `POST /payments/mock/fail`
 - `POST /payments/digikuntz/verify`
