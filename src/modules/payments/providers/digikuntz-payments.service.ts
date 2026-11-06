@@ -23,6 +23,8 @@ export interface DigikuntzTransactionResponse {
   [key: string]: unknown;
 }
 
+export type DigikuntzPaymentMethodCode = 'ORANGE' | 'MTN';
+
 export type NormalizedDigikuntzStatus =
   | 'pending'
   | 'success'
@@ -62,6 +64,10 @@ export class DigikuntzPaymentsService {
   private readonly userId: string;
   private readonly secretKey: string;
   private readonly callbackUrl: string;
+  private readonly checkoutHosts: Set<string>;
+  private accessValidatedAt = 0;
+  private accessValidationInFlight?: Promise<void>;
+  private readonly accessValidationTtlMs = 60_000;
 
   constructor(
     private readonly http: HttpService,
@@ -77,6 +83,15 @@ export class DigikuntzPaymentsService {
       this.config.get<string>('DIGIKUNTZ_SECRET_KEY') ?? '',
     ).trim();
     this.callbackUrl = this.resolveCallbackUrl();
+    this.checkoutHosts = new Set(
+      String(
+        this.config.get<string>('DIGIKUNTZ_CHECKOUT_HOSTS') ??
+          'checkout.flutterwave.com,app.digikuntz.com',
+      )
+        .split(',')
+        .map((host) => host.trim().toLowerCase())
+        .filter(Boolean),
+    );
   }
 
   private resolveCallbackUrl(): string {
@@ -145,6 +160,66 @@ export class DigikuntzPaymentsService {
     }
   }
 
+  async assertAccessible(): Promise<void> {
+    this.assertConfigured();
+
+    if (Date.now() - this.accessValidatedAt < this.accessValidationTtlMs) {
+      return;
+    }
+    if (this.accessValidationInFlight) {
+      return this.accessValidationInFlight;
+    }
+
+    this.accessValidationInFlight = this.validateProviderAccess().finally(
+      () => {
+        this.accessValidationInFlight = undefined;
+      },
+    );
+    return this.accessValidationInFlight;
+  }
+
+  private async validateProviderAccess(): Promise<void> {
+    try {
+      const response = await firstValueFrom(
+        this.http.get(`${this.baseUrl}/balance`, {
+          headers: this.headers(),
+        }),
+      );
+      const payload = this.decodeJsonPayload(response.data);
+      this.throwIfAccessRejected(payload);
+
+      if (typeof payload === 'string') {
+        throw new BadGatewayException(
+          'Digikuntz access check returned an unreadable response',
+        );
+      }
+
+      const record = this.asRecord(payload);
+      if (!Object.prototype.hasOwnProperty.call(record, 'balance')) {
+        throw new BadGatewayException(
+          'Digikuntz access check returned an unexpected response',
+        );
+      }
+
+      this.accessValidatedAt = Date.now();
+    } catch (error: unknown) {
+      if (error instanceof HttpException) throw error;
+
+      const response = this.asRecord(this.asRecord(error).response);
+      const status = Number(response.status ?? 0);
+      if (status === 401 || status === 403) {
+        this.logger.error(
+          `Digikuntz rejected API access during credential check; status=${status}`,
+        );
+        throw new ServiceUnavailableException(
+          'Payment provider is temporarily unavailable',
+        );
+      }
+
+      this.throwUpstreamError('access check', error);
+    }
+  }
+
   private requiredEnv(name: string): string {
     const value = String(
       name === 'DIGIKUNTZ_BASE_URL'
@@ -175,6 +250,11 @@ export class DigikuntzPaymentsService {
       return String(value).trim();
     }
     return '';
+  }
+
+  private hostedCheckoutPhone(value: string): string {
+    const phone = value.trim();
+    return /^2376\d{8}$/.test(phone) ? phone.slice(3) : phone;
   }
 
   private transactionRecords(payload: unknown): Record<string, unknown>[] {
@@ -230,10 +310,16 @@ export class DigikuntzPaymentsService {
     if (!value) return '';
     try {
       const parsed = new URL(value);
-      return parsed.protocol === 'https:' ? parsed.toString() : '';
+      return parsed.protocol === 'https:' && this.isTrustedCheckoutHost(parsed)
+        ? parsed.toString()
+        : '';
     } catch {
       return '';
     }
+  }
+
+  private isTrustedCheckoutHost(parsed: URL): boolean {
+    return this.checkoutHosts.has(parsed.hostname.toLowerCase());
   }
 
   private payloadShape(records: Record<string, unknown>[]): string {
@@ -269,6 +355,36 @@ export class DigikuntzPaymentsService {
     }
 
     return '';
+  }
+
+  private isDirectChargeDisabledError(error: unknown): boolean {
+    const response = this.asRecord(this.asRecord(error).response);
+    if (Number(response.status ?? 0) !== 503) return false;
+
+    const payload = this.decodeJsonPayload(response.data);
+    const record = this.asRecord(payload);
+    const code = this.asString(record.code).toUpperCase();
+    const message = this.providerErrorMessage(payload);
+
+    return (
+      code === 'DIRECT_CHARGE_DISABLED' ||
+      /direct mobile-money charge is currently disabled/i.test(message)
+    );
+  }
+
+  private throwIfAccessRejected(payload: unknown): void {
+    if (typeof payload !== 'string') return;
+
+    if (
+      /invalid credentials|invalid user status|api access (?:is )?disabled|api access desabled|unauthori[sz]e/i.test(
+        payload,
+      )
+    ) {
+      this.logger.error('Digikuntz rejected configured API credentials');
+      throw new ServiceUnavailableException(
+        'Payment provider is temporarily unavailable',
+      );
+    }
   }
 
   private throwUpstreamError(action: string, e: unknown): never {
@@ -389,7 +505,9 @@ export class DigikuntzPaymentsService {
 
     try {
       const parsed = new URL(raw, requestUrl);
-      if (parsed.protocol !== 'https:') return '';
+      if (parsed.protocol !== 'https:' || !this.isTrustedCheckoutHost(parsed)) {
+        return '';
+      }
       if (
         parsed.origin.toLowerCase() === 'https://app.digikuntz.com' &&
         parsed.pathname.startsWith('/dev/')
@@ -493,6 +611,7 @@ export class DigikuntzPaymentsService {
       );
       const decoded = this.decodeJsonPayload(response.data);
       if (typeof decoded === 'string') {
+        this.throwIfAccessRejected(decoded);
         const contentType = String(response.headers?.['content-type'] ?? '')
           .trim()
           .toLowerCase();
@@ -621,7 +740,7 @@ export class DigikuntzPaymentsService {
         estimation: input.amount,
         raisonForTransfer: input.reason,
         userEmail: input.userEmail,
-        userPhone: input.userPhone,
+        userPhone: this.hostedCheckoutPhone(input.userPhone),
         userCountry: input.userCountry,
         senderName: input.senderName,
         callbackUrl,
@@ -635,6 +754,7 @@ export class DigikuntzPaymentsService {
         .toLowerCase();
       const payload = this.decodeJsonPayload(res.data);
       if (typeof payload === 'string') {
+        this.throwIfAccessRejected(payload);
         this.logger.warn(
           `Digikuntz createPayin returned non-JSON content; status=${Number(res.status ?? 0) || 'unknown'}; contentType=${contentType || 'unknown'}; baseUrl=${this.baseUrl}; ${this.htmlSummary(payload, res)}`,
         );
@@ -684,6 +804,104 @@ export class DigikuntzPaymentsService {
     }
   }
 
+  async createDirectCharge(input: {
+    amount: number;
+    reason: string;
+    userEmail: string;
+    userPhone: string;
+    userCountry: string;
+    senderName: string;
+    paymentMethodCode: DigikuntzPaymentMethodCode;
+  }): Promise<DigikuntzTransactionResponse> {
+    try {
+      const url = `${this.baseUrl}/direct-charge`;
+      this.assertConfigured();
+      const body = {
+        estimation: input.amount,
+        userPhone: input.userPhone,
+        userEmail: input.userEmail,
+        userCountry: input.userCountry,
+        senderName: input.senderName,
+        paymentMethodCode: input.paymentMethodCode,
+        callbackUrl: this.callbackUrl,
+        raisonForTransfer: input.reason,
+      };
+
+      const res = await firstValueFrom(
+        this.http.post(url, body, { headers: this.headers() }),
+      );
+      const payload = this.decodeJsonPayload(res.data);
+
+      if (typeof payload === 'string') {
+        this.throwIfAccessRejected(payload);
+        const contentType = String(res.headers?.['content-type'] ?? '')
+          .trim()
+          .toLowerCase();
+        this.logger.warn(
+          `Digikuntz direct-charge returned non-JSON content; status=${Number(res.status ?? 0) || 'unknown'}; contentType=${contentType || 'unknown'}; ${this.htmlSummary(payload, res)}`,
+        );
+
+        for (const delay of [0, 300, 900]) {
+          if (delay > 0) await this.wait(delay);
+          const recovered = await this.recoverPayin({
+            amount: input.amount,
+            reason: input.reason,
+          });
+          if (
+            recovered?.id ||
+            recovered?.transactionRef ||
+            recovered?.paymentLink
+          ) {
+            return recovered;
+          }
+        }
+
+        const paymentLink = this.paymentLinkFromHtml(payload, res, url);
+        if (paymentLink) {
+          return {
+            status: 'payin_pending',
+            paymentLink,
+            data: { paymentLink },
+          };
+        }
+        throw new BadGatewayException(
+          'Digikuntz direct charge returned an unreadable response and the transaction could not be recovered',
+        );
+      }
+
+      const normalized = this.normalizeTransactionResponse(payload);
+      if (
+        !normalized.id &&
+        !normalized.transactionRef &&
+        !normalized.paymentLink
+      ) {
+        const records = this.transactionRecords(payload);
+        this.logger.warn(
+          `Digikuntz direct-charge response has no transaction fields; shape=${this.payloadShape(records) || 'empty'}`,
+        );
+        throw new BadGatewayException(
+          'Digikuntz direct charge did not return a transaction identifier',
+        );
+      }
+      return normalized;
+    } catch (e: unknown) {
+      if (this.isDirectChargeDisabledError(e)) {
+        this.logger.warn(
+          'Digikuntz direct charge is disabled; falling back to hosted checkout',
+        );
+        return this.createPayin({
+          amount: input.amount,
+          reason: input.reason,
+          userEmail: input.userEmail,
+          userPhone: input.userPhone,
+          userCountry: input.userCountry,
+          senderName: input.senderName,
+        });
+      }
+      this.throwUpstreamError('direct-charge', e);
+    }
+  }
+
   async getTransaction(transactionId: string) {
     try {
       const url = `${this.baseUrl}/transaction`;
@@ -693,7 +911,9 @@ export class DigikuntzPaymentsService {
           params: { transactionId },
         }),
       );
-      return this.normalizeTransactionResponse(res.data);
+      const payload = this.decodeJsonPayload(res.data);
+      this.throwIfAccessRejected(payload);
+      return this.normalizeTransactionResponse(payload);
     } catch (e: unknown) {
       this.throwUpstreamError('getTransaction', e);
     }

@@ -1,4 +1,5 @@
 import {
+  IsEmail,
   IsIn,
   IsInt,
   IsMongoId,
@@ -20,10 +21,29 @@ export class CreateIntentDto {
   @IsIn(['MOCK', 'DIGIKUNTZ'])
   provider?: 'MOCK' | 'DIGIKUNTZ';
 
-  @IsOptional() @IsString() userEmail?: string;
-  @IsOptional() @IsString() userPhone?: string;
-  @IsOptional() @IsString() userCountry?: string;
-  @IsOptional() @IsString() senderName?: string;
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(254)
+  userEmail?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  userPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  userCountry?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  senderName?: string;
+
+  @IsOptional()
+  @IsIn(['ORANGE', 'MTN'])
+  paymentMethodCode?: 'ORANGE' | 'MTN';
 
   @IsOptional()
   @IsString()

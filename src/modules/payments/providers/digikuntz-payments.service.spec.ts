@@ -2,7 +2,7 @@ import { ServiceUnavailableException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { AxiosResponse } from 'axios';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import {
   DigikuntzPaymentsService,
   normalizeDigikuntzStatus,
@@ -14,6 +14,8 @@ describe('DigikuntzPaymentsService', () => {
     DIGIKUNTZ_USER_ID: 'account-user-id',
     DIGIKUNTZ_SECRET_KEY: 'SK-secret',
     DIGIKUNTZ_CALLBACK_URL: 'https://tinguilin.yaba-in.com/tabs/participations',
+    DIGIKUNTZ_CHECKOUT_HOSTS:
+      'checkout.flutterwave.com,app.digikuntz.com,checkout.example.com',
   };
 
   const createService = (overrides: Record<string, string> = {}) => {
@@ -34,6 +36,45 @@ describe('DigikuntzPaymentsService', () => {
       get,
     };
   };
+
+  it('validates provider access once within the cache window', async () => {
+    const { service, get } = createService();
+    get.mockReturnValue(
+      of({
+        data: { balance: 85000, currency: 'XAF' },
+        headers: { 'content-type': 'application/json' },
+      } as AxiosResponse),
+    );
+
+    await service.assertAccessible();
+    await service.assertAccessible();
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith(
+      'https://app.digikuntz.com/dev/balance',
+      {
+        headers: {
+          Accept: 'application/json',
+          'x-user-id': 'account-user-id',
+          'x-secret-key': 'SK-secret',
+        },
+      },
+    );
+  });
+
+  it('rejects disabled or invalid provider credentials returned as text', async () => {
+    const { service, get } = createService();
+    get.mockReturnValue(
+      of({
+        data: 'invalid credentials or API access desabled or Unauthorize',
+        headers: { 'content-type': 'text/html' },
+      } as AxiosResponse),
+    );
+
+    await expect(service.assertAccessible()).rejects.toThrow(
+      ServiceUnavailableException,
+    );
+  });
 
   it('sends the documented pay-in request and flattens response data', async () => {
     const { service, post } = createService();
@@ -85,6 +126,133 @@ describe('DigikuntzPaymentsService', () => {
       transactionRef: 'IN123#250101120000',
       paymentWithTaxes: '105',
       paymentLink: 'https://checkout.flutterwave.com/pay/test',
+    });
+  });
+
+  it('sends the documented direct-charge request without requiring a checkout link', async () => {
+    const { service, post } = createService();
+    post.mockReturnValue(
+      of({
+        data: {
+          id: 'direct-provider-id',
+          status: 'payin_pending',
+          data: {
+            estimation: '5000',
+            transactionRef: 'IN123#250101120000',
+            invoiceTaxes: '250',
+            paymentWithTaxes: '5250',
+            receiverCurrency: 'XAF',
+          },
+        },
+      } as AxiosResponse),
+    );
+
+    const result = await service.createDirectCharge({
+      amount: 5000,
+      reason: 'Tingilin payment ABC123 x1',
+      userEmail: 'user@example.com',
+      userPhone: '237691224472',
+      userCountry: 'Cameroon',
+      senderName: 'Test User',
+      paymentMethodCode: 'MTN',
+    });
+
+    expect(post).toHaveBeenCalledWith(
+      'https://app.digikuntz.com/dev/direct-charge',
+      {
+        estimation: 5000,
+        userPhone: '237691224472',
+        userEmail: 'user@example.com',
+        userCountry: 'Cameroon',
+        senderName: 'Test User',
+        paymentMethodCode: 'MTN',
+        callbackUrl: 'https://tinguilin.yaba-in.com/tabs/participations',
+        raisonForTransfer: 'Tingilin payment ABC123 x1',
+      },
+      {
+        headers: {
+          Accept: 'application/json',
+          'x-user-id': 'account-user-id',
+          'x-secret-key': 'SK-secret',
+        },
+      },
+    );
+    expect(result).toMatchObject({
+      id: 'direct-provider-id',
+      status: 'payin_pending',
+      transactionRef: 'IN123#250101120000',
+      paymentWithTaxes: '5250',
+    });
+    expect(result.paymentLink).toBeUndefined();
+  });
+
+  it('falls back to hosted checkout when direct charge is disabled', async () => {
+    const { service, post } = createService();
+    post
+      .mockReturnValueOnce(
+        throwError(() => ({
+          response: {
+            status: 503,
+            data: {
+              statusCode: 503,
+              code: 'DIRECT_CHARGE_DISABLED',
+              message: 'Direct mobile-money charge is currently disabled.',
+            },
+          },
+        })),
+      )
+      .mockReturnValueOnce(
+        of({
+          data: {
+            id: 'hosted-provider-id',
+            status: 'payin_pending',
+            data: {
+              transactionRef: 'IN123#250101120001',
+              paymentLink:
+                'https://checkout.flutterwave.com/v3/hosted/pay/fallback',
+            },
+          },
+          headers: { 'content-type': 'application/json' },
+        } as AxiosResponse),
+      );
+
+    const result = await service.createDirectCharge({
+      amount: 5000,
+      reason: 'Tingilin payment ABC123 x1',
+      userEmail: 'user@example.com',
+      userPhone: '237691224472',
+      userCountry: 'Cameroon',
+      senderName: 'Test User',
+      paymentMethodCode: 'MTN',
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenNthCalledWith(
+      2,
+      'https://app.digikuntz.com/dev/transaction',
+      {
+        estimation: 5000,
+        raisonForTransfer: 'Tingilin payment ABC123 x1',
+        userEmail: 'user@example.com',
+        userPhone: '691224472',
+        userCountry: 'Cameroon',
+        senderName: 'Test User',
+        callbackUrl: 'https://tinguilin.yaba-in.com/tabs/participations',
+      },
+      {
+        headers: {
+          Accept: 'application/json',
+          'x-user-id': 'account-user-id',
+          'x-secret-key': 'SK-secret',
+        },
+      },
+    );
+    expect(result).toMatchObject({
+      id: 'hosted-provider-id',
+      status: 'payin_pending',
+      transactionRef: 'IN123#250101120001',
+      paymentLink:
+        'https://checkout.flutterwave.com/v3/hosted/pay/fallback',
     });
   });
 

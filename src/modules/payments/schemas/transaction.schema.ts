@@ -48,6 +48,14 @@ export class Transaction {
   @Prop({ type: String, required: false, default: undefined })
   paymentLink?: string;
 
+  @Prop({
+    type: String,
+    enum: ['ORANGE', 'MTN'],
+    required: false,
+    default: undefined,
+  })
+  paymentMethodCode?: 'ORANGE' | 'MTN';
+
   @Prop({ type: Number, required: false })
   paymentWithTaxes?: number;
 
