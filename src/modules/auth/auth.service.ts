@@ -598,6 +598,58 @@ export class AuthService {
     return { ok: true };
   }
 
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<{ ok: boolean; message: string }> {
+    const user = await this.usersService.findById(userId);
+    if (!user) {
+      throw new UnauthorizedException('Utilisateur introuvable');
+    }
+
+    const passwordMatch = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!passwordMatch) {
+      throw new UnauthorizedException('Mot de passe actuel incorrect');
+    }
+
+    // Prevent no-op change (compare plain strings before hashing)
+    if (currentPassword === newPassword) {
+      throw new BadRequestException(
+        "Le nouveau mot de passe doit être différent de l'ancien",
+      );
+    }
+
+    // Belt-and-suspenders length check (DTO already enforces MinLength(8))
+    if (newPassword.length < 8) {
+      throw new BadRequestException(
+        'Le nouveau mot de passe doit contenir au moins 8 caractères',
+      );
+    }
+
+    user.passwordHash = await this.hashPassword(newPassword);
+    this.invalidateRefreshState(user, { bumpTokenVersion: true });
+    await user.save();
+
+    // Best-effort confirmation email — never blocks the response
+    this.sendPasswordChangeConfirmationEmail(
+      user.email,
+      user.firstName,
+    ).catch(() => { /* already logged inside */ });
+
+    await this.auditService.safeLog({
+      action: 'AUTH_CHANGE_PASSWORD',
+      actorUserId: user._id.toString(),
+      actorEmail: user.email,
+      actorRole: user.role,
+      targetType: 'USER',
+      targetId: user._id.toString(),
+      metadata: { success: true },
+    });
+
+    return { ok: true, message: 'Mot de passe modifié avec succès' };
+  }
+
   private extractIdentifier(input: {
     identifier?: string;
     phoneOrEmail?: string;
@@ -827,6 +879,57 @@ export class AuthService {
     } catch (error: any) {
       this.logger.error(
         `Envoi email invitation échoué (${toEmail}) via ${this.describeSmtpEndpoint()}: ${error?.message ?? error}`,
+      );
+      return {
+        delivered: false,
+        reason: 'SMTP_SEND_FAILED',
+        errorMessage: String(error?.message ?? error),
+      };
+    }
+  }
+
+  private async sendPasswordChangeConfirmationEmail(
+    toEmail: string,
+    firstName: string,
+  ): Promise<MailDeliveryResult> {
+    if (!String(toEmail ?? '').trim()) {
+      this.logger.error(
+        "[CHANGE_PASSWORD] Email cible manquant pour l'envoi de la confirmation.",
+      );
+      return { delivered: false, reason: 'EMAIL_TARGET_MISSING' };
+    }
+
+    const smtp = this.buildSmtpTransporter();
+    const from =
+      String(this.config.get<string>('MAIL_FROM', '')).trim() ||
+      'Tingilin <no-reply@tingilin.local>';
+
+    if (!smtp.transporter) {
+      return { delivered: false, reason: smtp.reason ?? 'SMTP_CONFIG_MISSING' };
+    }
+
+    try {
+      const appName = String(this.config.get<string>('APP_NAME', 'Tingilin'));
+
+      await smtp.transporter.sendMail({
+        from,
+        to: toEmail,
+        subject: `${appName} - Mot de passe modifié`,
+        text: `Bonjour ${firstName || ''}, votre mot de passe a été modifié avec succès. Si vous n'êtes pas à l'origine de cette action, contactez-nous immédiatement.`,
+        html: `
+          <div style="font-family: Arial, sans-serif; line-height:1.5; color:#1f2937;">
+            <h2 style="margin-bottom:8px;">Modification du mot de passe</h2>
+            <p>Bonjour ${firstName || ''},</p>
+            <p>Votre mot de passe a été <strong>modifié avec succès</strong>.</p>
+            <p style="color:#dc2626;">Si vous n'êtes pas à l'origine de cette action, contactez-nous immédiatement.</p>
+          </div>
+        `,
+      });
+
+      return { delivered: true, reason: 'EMAIL_SENT' };
+    } catch (error: any) {
+      this.logger.warn(
+        `[CHANGE_PASSWORD] Envoi email confirmation échoué (${toEmail}): ${error?.message ?? error}`,
       );
       return {
         delivered: false,
