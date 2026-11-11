@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -57,6 +58,7 @@ interface DashboardKpiSnapshot {
 
 @Injectable()
 export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
   private readonly analyticsTimezone = 'Africa/Douala';
   private static readonly PAYMENT_EXPIRED_REASON = 'PAYMENT_EXPIRED';
 
@@ -1095,6 +1097,9 @@ export class PaymentsService {
     }
 
     if (provider === 'DIGIKUNTZ') {
+      this.logger.log(
+        `[PAYMENT_FLOW] direct_charge_attempt transactionId=${tx._id.toString()} method=${digikuntzInput!.paymentMethodCode}`,
+      );
       const payin = await this.digikuntz.createDirectCharge({
         amount,
         reason: this.buildDigikuntzReason(tx),
@@ -1163,6 +1168,15 @@ export class PaymentsService {
       tx.paymentFlow =
         payin?.paymentFlow ??
         (paymentLink ? 'HOSTED_CHECKOUT' : 'DIRECT_CHARGE');
+      const safeProviderStatus = providerStatus
+        .replace(/[^a-zA-Z0-9_-]/g, '')
+        .slice(0, 40);
+      const checkoutHost = paymentLink
+        ? new URL(paymentLink).hostname.toLowerCase()
+        : 'none';
+      this.logger.log(
+        `[PAYMENT_FLOW] direct_charge_result transactionId=${tx._id.toString()} flow=${tx.paymentFlow} status=${safeProviderStatus || 'unknown'} hasProviderTransaction=${Boolean(providerTransactionId || providerRef)} checkoutHost=${checkoutHost}`,
+      );
       tx.paymentWithTaxes = Number.isFinite(paymentWithTaxes)
         ? paymentWithTaxes
         : 0;
