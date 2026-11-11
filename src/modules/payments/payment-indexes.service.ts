@@ -2,6 +2,7 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection } from 'mongoose';
 import {
+  ensurePaymentExpirationIndex,
   ensurePaymentIndexes,
   ensureTicketFulfillmentIndex,
 } from './payment-indexes';
@@ -15,6 +16,9 @@ export class PaymentIndexesService implements OnApplicationBootstrap {
   async onApplicationBootstrap(): Promise<void> {
     const collection = this.connection.collection('transactions');
     await ensurePaymentIndexes(collection, (message) =>
+      this.logger.log(message),
+    );
+    await ensurePaymentExpirationIndex(collection, (message) =>
       this.logger.log(message),
     );
     await ensureTicketFulfillmentIndex(

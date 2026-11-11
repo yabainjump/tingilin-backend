@@ -6,6 +6,10 @@ export type TxStatus = 'PENDING' | 'SUCCESS' | 'FAILED' | 'REFUNDED';
 
 @Schema({ timestamps: true })
 export class Transaction {
+  createdAt?: Date;
+
+  updatedAt?: Date;
+
   @Prop({ type: Types.ObjectId, required: true, index: true })
   userId: Types.ObjectId;
 
@@ -50,6 +54,17 @@ export class Transaction {
 
   @Prop({
     type: String,
+    enum: ['DIRECT_CHARGE', 'HOSTED_CHECKOUT'],
+    required: false,
+    default: undefined,
+  })
+  paymentFlow?: 'DIRECT_CHARGE' | 'HOSTED_CHECKOUT';
+
+  @Prop({ type: Date, required: false })
+  expiresAt?: Date;
+
+  @Prop({
+    type: String,
     enum: ['ORANGE', 'MTN'],
     required: false,
     default: undefined,
@@ -89,3 +104,4 @@ TransactionSchema.index({ status: 1, createdAt: -1 });
 TransactionSchema.index({ createdAt: -1 });
 TransactionSchema.index({ userId: 1, createdAt: -1 });
 TransactionSchema.index({ raffleId: 1, status: 1 });
+TransactionSchema.index({ status: 1, expiresAt: 1 });

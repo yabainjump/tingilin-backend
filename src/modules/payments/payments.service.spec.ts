@@ -30,6 +30,7 @@ describe('PaymentsService', () => {
       create: jest.fn(),
       exists: jest.fn(),
       updateOne: jest.fn(),
+      updateMany: jest.fn(),
     };
     const ledgerModelMock = {
       find: jest.fn(),
@@ -64,7 +65,10 @@ describe('PaymentsService', () => {
         { provide: TicketsService, useValue: {} },
         { provide: ParticipationsService, useValue: {} },
         { provide: DigikuntzPaymentsService, useValue: digikuntzMock },
-        { provide: NotificationsService, useValue: {} },
+        {
+          provide: NotificationsService,
+          useValue: { createOnce: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: UsersService, useValue: {} },
         { provide: ConfigService, useValue: configService },
         {
@@ -79,6 +83,36 @@ describe('PaymentsService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  it('expires pending payments after the configured ten-minute deadline', async () => {
+    const exec = jest.fn().mockResolvedValue({ modifiedCount: 3 });
+    txModelMock.updateMany.mockReturnValue({ exec });
+    const now = new Date('2026-11-11T12:00:00.000Z');
+
+    await expect(service.expirePendingTransactions(now)).resolves.toBe(3);
+
+    expect(txModelMock.updateMany).toHaveBeenCalledWith(
+      {
+        status: 'PENDING',
+        $or: [
+          { expiresAt: { $lte: now } },
+          {
+            expiresAt: { $exists: false },
+            createdAt: { $lte: new Date('2026-11-11T11:50:00.000Z') },
+          },
+        ],
+      },
+      {
+        $set: {
+          status: 'FAILED',
+          failReason: 'PAYMENT_EXPIRED',
+          failedAt: now,
+          rawProviderStatus: 'payment_expired',
+        },
+      },
+    );
+    expect(exec).toHaveBeenCalled();
   });
 
   it('disables mock payments by default in production', () => {
@@ -132,6 +166,55 @@ describe('PaymentsService', () => {
     expect(tx.status).toBe('PENDING');
     expect(tx.save).toHaveBeenCalled();
     expect(result).toMatchObject({ ok: true, status: 'PENDING' });
+  });
+
+  it('reconciles a provider success received after local payment expiration', async () => {
+    configService.get.mockImplementation((key: string, fallback?: string) => {
+      const values: Record<string, string> = {
+        NODE_ENV: 'production',
+        DIGIKUNTZ_WEBHOOK_SIGNATURE_MODE: 'provider-verify',
+      };
+      return values[key] ?? fallback;
+    });
+
+    const tx = {
+      _id: { toString: () => '665f1a2b3c4d5e6f7a8b9c0d' },
+      userId: { toString: () => 'user-id' },
+      raffleId: { toString: () => 'raffle-id' },
+      providerTransactionId: 'provider-id',
+      providerRef: 'PROVIDER-REF',
+      amount: 5000,
+      currency: 'XAF',
+      quantity: 1,
+      status: 'FAILED',
+      failReason: 'PAYMENT_EXPIRED',
+      rawProviderStatus: 'payment_expired',
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    txModelMock.findOne.mockReturnValue({
+      exec: jest.fn().mockResolvedValue(tx),
+    });
+    digikuntzMock.getTransaction.mockResolvedValue({
+      id: 'provider-id',
+      status: 'payin_success',
+      transactionRef: 'PROVIDER-REF',
+      estimation: 5000,
+      receiverCurrency: 'XAF',
+    });
+    const finalize = jest
+      .spyOn(service as any, 'finalizeSuccessfulTransaction')
+      .mockResolvedValue({
+        _id: { toString: () => '665f1a2b3c4d5e6f7a8b9c0d' },
+        status: 'SUCCESS',
+      });
+
+    const result = await service.processDigikuntzWebhook({
+      id: 'provider-id',
+      status: 'payin_success',
+    });
+
+    expect(finalize).toHaveBeenCalledWith('665f1a2b3c4d5e6f7a8b9c0d');
+    expect(result).toMatchObject({ ok: true, status: 'SUCCESS' });
   });
 
   it('repairs an incomplete idempotent intent from the Digikuntz transaction list', async () => {

@@ -58,6 +58,7 @@ interface DashboardKpiSnapshot {
 @Injectable()
 export class PaymentsService {
   private readonly analyticsTimezone = 'Africa/Douala';
+  private static readonly PAYMENT_EXPIRED_REASON = 'PAYMENT_EXPIRED';
 
   constructor(
     @InjectModel(Transaction.name)
@@ -77,6 +78,73 @@ export class PaymentsService {
   mockPaymentsEnabled(): boolean {
     const explicit = this.config.get<string>('ENABLE_MOCK_PAYMENTS');
     return parseBooleanFlag(explicit, false);
+  }
+
+  private pendingPaymentTtlMs(): number {
+    const configured = Number(
+      this.config.get<string>('PAYMENT_PENDING_TTL_MINUTES', '10'),
+    );
+    const minutes = Number.isFinite(configured) ? configured : 10;
+    return Math.min(60, Math.max(1, minutes)) * 60 * 1000;
+  }
+
+  private isExpiredPayment(tx: Pick<Transaction, 'status' | 'failReason'>) {
+    return (
+      tx.status === 'FAILED' &&
+      tx.failReason === PaymentsService.PAYMENT_EXPIRED_REASON
+    );
+  }
+
+  private paymentDeadlinePassed(
+    tx: Pick<Transaction, 'expiresAt' | 'createdAt'>,
+    now = Date.now(),
+  ): boolean {
+    const explicitDeadline = tx.expiresAt
+      ? new Date(tx.expiresAt).getTime()
+      : NaN;
+    if (Number.isFinite(explicitDeadline)) return explicitDeadline <= now;
+
+    const createdAt = tx.createdAt ? new Date(tx.createdAt).getTime() : NaN;
+    return (
+      Number.isFinite(createdAt) &&
+      createdAt + this.pendingPaymentTtlMs() <= now
+    );
+  }
+
+  private async markPaymentExpired(tx: TransactionDocument): Promise<void> {
+    tx.status = 'FAILED';
+    tx.failReason = PaymentsService.PAYMENT_EXPIRED_REASON;
+    tx.failedAt = new Date();
+    tx.rawProviderStatus = 'payment_expired';
+    await tx.save();
+  }
+
+  async expirePendingTransactions(now = new Date()): Promise<number> {
+    const legacyCutoff = new Date(now.getTime() - this.pendingPaymentTtlMs());
+    const result = await this.txModel
+      .updateMany(
+        {
+          status: 'PENDING',
+          $or: [
+            { expiresAt: { $lte: now } },
+            {
+              expiresAt: { $exists: false },
+              createdAt: { $lte: legacyCutoff },
+            },
+          ],
+        },
+        {
+          $set: {
+            status: 'FAILED',
+            failReason: PaymentsService.PAYMENT_EXPIRED_REASON,
+            failedAt: now,
+            rawProviderStatus: 'payment_expired',
+          },
+        },
+      )
+      .exec();
+
+    return Number(result.modifiedCount ?? 0);
   }
 
   private parseDashboardGranularity(raw?: string): DashboardGranularity {
@@ -613,11 +681,18 @@ export class PaymentsService {
       quantity: Number(tx.quantity ?? 0),
       ticketUnitPrice,
       paymentLink: tx.paymentLink ?? undefined,
+      expiresAt:
+        tx.expiresAt instanceof Date
+          ? tx.expiresAt.toISOString()
+          : tx.expiresAt
+            ? new Date(tx.expiresAt).toISOString()
+            : undefined,
       paymentMethodCode: tx.paymentMethodCode ?? undefined,
       paymentFlow:
-        tx.provider === 'DIGIKUNTZ' && tx.paymentMethodCode
+        tx.paymentFlow ??
+        (tx.provider === 'DIGIKUNTZ' && tx.paymentMethodCode && !tx.paymentLink
           ? 'DIRECT_CHARGE'
-          : 'HOSTED_CHECKOUT',
+          : 'HOSTED_CHECKOUT'),
       providerStatus: tx.rawProviderStatus ?? undefined,
       paymentWithTaxes:
         tx.paymentWithTaxes !== undefined
@@ -669,6 +744,9 @@ export class PaymentsService {
       providerTransactionId,
       providerRef,
       paymentLink,
+      paymentFlow:
+        payin?.paymentFlow ??
+        (paymentLink ? 'HOSTED_CHECKOUT' : 'DIRECT_CHARGE'),
       providerStatus,
       paymentWithTaxes: Number.isFinite(paymentWithTaxes)
         ? paymentWithTaxes
@@ -705,8 +783,10 @@ export class PaymentsService {
     tx.providerTransactionId = details.providerTransactionId || undefined;
     tx.providerRef = details.providerRef || undefined;
     tx.paymentLink = details.paymentLink || tx.paymentLink;
+    tx.paymentFlow = details.paymentFlow;
     tx.paymentWithTaxes = details.paymentWithTaxes;
     tx.rawProviderStatus = details.providerStatus;
+    tx.expiresAt ??= new Date(Date.now() + this.pendingPaymentTtlMs());
     await tx.save();
 
     return this.buildIntentResponse(tx, ticketUnitPrice, true);
@@ -779,8 +859,15 @@ export class PaymentsService {
           finalized = tx;
           return;
         }
-        if (tx.status !== 'PENDING') {
+        const expiredPayment = this.isExpiredPayment(tx);
+        if (tx.status !== 'PENDING' && !expiredPayment) {
           throw new BadRequestException('Transaction not pending');
+        }
+
+        if (expiredPayment) {
+          tx.status = 'PENDING';
+          tx.failReason = undefined;
+          tx.failedAt = undefined;
         }
 
         const part = await this.participationsService.upsertAfterPurchase(
@@ -979,6 +1066,7 @@ export class PaymentsService {
         status: 'PENDING',
         idempotencyKey: idempotencyKey ?? undefined,
         paymentMethodCode: digikuntzInput?.paymentMethodCode,
+        expiresAt: new Date(Date.now() + this.pendingPaymentTtlMs()),
       });
     } catch (error) {
       if (idempotencyKey && this.isDuplicateKeyError(error, 'idempotencyKey')) {
@@ -1072,6 +1160,9 @@ export class PaymentsService {
       tx.providerTransactionId = providerTransactionId || undefined;
       tx.providerRef = providerRef || undefined;
       tx.paymentLink = paymentLink || undefined;
+      tx.paymentFlow =
+        payin?.paymentFlow ??
+        (paymentLink ? 'HOSTED_CHECKOUT' : 'DIRECT_CHARGE');
       tx.paymentWithTaxes = Number.isFinite(paymentWithTaxes)
         ? paymentWithTaxes
         : 0;
@@ -2093,7 +2184,8 @@ export class PaymentsService {
       };
     }
 
-    if (tx.status !== 'PENDING') {
+    const expiredPayment = this.isExpiredPayment(tx);
+    if (tx.status !== 'PENDING' && !expiredPayment) {
       return { ok: false, transactionId: tx._id.toString(), status: tx.status };
     }
 
@@ -2107,12 +2199,22 @@ export class PaymentsService {
         tx.providerTransactionId = details.providerTransactionId || undefined;
         tx.providerRef = details.providerRef || tx.providerRef;
         tx.paymentLink = details.paymentLink || tx.paymentLink;
+        tx.paymentFlow = details.paymentFlow;
         tx.paymentWithTaxes = details.paymentWithTaxes;
         tx.rawProviderStatus = details.providerStatus;
         await tx.save();
       }
 
       if (!tx.providerTransactionId) {
+        if (expiredPayment || this.paymentDeadlinePassed(tx)) {
+          await this.markPaymentExpired(tx);
+          return {
+            ok: false,
+            transactionId: tx._id.toString(),
+            status: 'FAILED',
+            remoteStatus: 'payment_expired',
+          };
+        }
         return {
           ok: true,
           transactionId: tx._id.toString(),
@@ -2132,6 +2234,15 @@ export class PaymentsService {
     tx.rawProviderStatus = remoteStatus;
 
     if (normalizedStatus === 'pending') {
+      if (expiredPayment || this.paymentDeadlinePassed(tx)) {
+        await this.markPaymentExpired(tx);
+        return {
+          ok: false,
+          transactionId: tx._id.toString(),
+          status: 'FAILED',
+          remoteStatus: 'payment_expired',
+        };
+      }
       await tx.save();
       return { ok: true, status: 'PENDING', remoteStatus };
     }
@@ -2281,7 +2392,7 @@ export class PaymentsService {
     }
 
     if (normalizedStatus === 'success') {
-      if (tx.status !== 'PENDING') {
+      if (tx.status !== 'PENDING' && !this.isExpiredPayment(tx)) {
         await tx.save();
         return {
           ok: true,

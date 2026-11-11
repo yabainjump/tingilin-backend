@@ -19,6 +19,7 @@ export interface DigikuntzTransactionResponse {
   transactionRef?: string;
   paymentLink?: string;
   paymentWithTaxes?: number | string;
+  paymentFlow?: 'DIRECT_CHARGE' | 'HOSTED_CHECKOUT';
   data?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -357,19 +358,28 @@ export class DigikuntzPaymentsService {
     return '';
   }
 
-  private isDirectChargeDisabledError(error: unknown): boolean {
+  private shouldFallbackToHostedCheckout(error: unknown): boolean {
     const response = this.asRecord(this.asRecord(error).response);
-    if (Number(response.status ?? 0) !== 503) return false;
+    const status = Number(response.status ?? 0);
 
     const payload = this.decodeJsonPayload(response.data);
     const record = this.asRecord(payload);
     const code = this.asString(record.code).toUpperCase();
     const message = this.providerErrorMessage(payload);
 
-    return (
+    if (
       code === 'DIRECT_CHARGE_DISABLED' ||
-      /direct mobile-money charge is currently disabled/i.test(message)
-    );
+      /direct(?: mobile-money)? (?:charge|pay)(?:ment)? is (?:currently )?(?:disabled|unavailable|unsupported)/i.test(
+        message,
+      )
+    ) {
+      return true;
+    }
+
+    // A provider rejection received before any transaction is created is safe
+    // to reroute. Authentication, duplicate and server/network failures are not:
+    // their outcome can be ambiguous and retrying could initiate two payments.
+    return [400, 404, 405, 422, 501].includes(status);
   }
 
   private throwIfAccessRejected(payload: unknown): void {
@@ -798,7 +808,7 @@ export class DigikuntzPaymentsService {
           `Digikuntz createPayin response has no transaction fields; shape=${this.payloadShape(records) || 'empty'}`,
         );
       }
-      return normalized;
+      return { ...normalized, paymentFlow: 'HOSTED_CHECKOUT' as const };
     } catch (e: unknown) {
       this.throwUpstreamError('createPayin', e);
     }
@@ -852,7 +862,12 @@ export class DigikuntzPaymentsService {
             recovered?.transactionRef ||
             recovered?.paymentLink
           ) {
-            return recovered;
+            return {
+              ...recovered,
+              paymentFlow: recovered.paymentLink
+                ? ('HOSTED_CHECKOUT' as const)
+                : ('DIRECT_CHARGE' as const),
+            };
           }
         }
 
@@ -861,6 +876,7 @@ export class DigikuntzPaymentsService {
           return {
             status: 'payin_pending',
             paymentLink,
+            paymentFlow: 'HOSTED_CHECKOUT',
             data: { paymentLink },
           };
         }
@@ -883,11 +899,18 @@ export class DigikuntzPaymentsService {
           'Digikuntz direct charge did not return a transaction identifier',
         );
       }
-      return normalized;
+      return {
+        ...normalized,
+        paymentFlow: normalized.paymentLink
+          ? ('HOSTED_CHECKOUT' as const)
+          : ('DIRECT_CHARGE' as const),
+      };
     } catch (e: unknown) {
-      if (this.isDirectChargeDisabledError(e)) {
+      if (this.shouldFallbackToHostedCheckout(e)) {
+        const response = this.asRecord(this.asRecord(e).response);
+        const status = Number(response.status ?? 0);
         this.logger.warn(
-          'Digikuntz direct charge is disabled; falling back to hosted checkout',
+          `Digikuntz direct charge was rejected${status ? ` (status=${status})` : ''}; falling back to hosted checkout`,
         );
         return this.createPayin({
           amount: input.amount,
@@ -897,6 +920,34 @@ export class DigikuntzPaymentsService {
           userCountry: input.userCountry,
           senderName: input.senderName,
         });
+      }
+
+      const response = this.asRecord(this.asRecord(e).response);
+      const status = Number(response.status ?? 0);
+      if (!status || status >= 500) {
+        for (const delay of [300, 900]) {
+          if (delay > 0) await this.wait(delay);
+          try {
+            const recovered = await this.recoverPayin({
+              amount: input.amount,
+              reason: input.reason,
+            });
+            if (recovered) {
+              this.logger.log(
+                `Recovered Digikuntz transaction ${recovered.id ?? 'unknown'} after an ambiguous direct-charge failure`,
+              );
+              return {
+                ...recovered,
+                paymentFlow: recovered.paymentLink
+                  ? ('HOSTED_CHECKOUT' as const)
+                  : ('DIRECT_CHARGE' as const),
+              };
+            }
+          } catch {
+            // Keep the original direct-charge error. Starting hosted checkout
+            // here would risk charging twice if the first request succeeded.
+          }
+        }
       }
       this.throwUpstreamError('direct-charge', e);
     }

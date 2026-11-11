@@ -15,6 +15,7 @@ import { UsersModule } from '../users/users.module';
 import { PaymentsAdminController } from './payments.admin.controller';
 import { PaymentsWebhookController } from './payments.webhook.controller';
 import { PaymentIndexesService } from './payment-indexes.service';
+import { PaymentExpirationScheduler } from './payment-expiration.scheduler';
 
 @Module({
   imports: [
@@ -37,7 +38,12 @@ import { PaymentIndexesService } from './payment-indexes.service';
     PaymentsAdminController,
     PaymentsWebhookController,
   ],
-  providers: [PaymentsService, DigikuntzPaymentsService, PaymentIndexesService],
+  providers: [
+    PaymentsService,
+    DigikuntzPaymentsService,
+    PaymentIndexesService,
+    PaymentExpirationScheduler,
+  ],
   exports: [PaymentsService],
 })
 export class PaymentsModule {}

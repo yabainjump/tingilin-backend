@@ -253,7 +253,81 @@ describe('DigikuntzPaymentsService', () => {
       transactionRef: 'IN123#250101120001',
       paymentLink:
         'https://checkout.flutterwave.com/v3/hosted/pay/fallback',
+      paymentFlow: 'HOSTED_CHECKOUT',
     });
+  });
+
+  it('falls back to hosted checkout after an explicit direct-charge validation rejection', async () => {
+    const { service, post } = createService();
+    post
+      .mockReturnValueOnce(
+        throwError(() => ({
+          response: {
+            status: 422,
+            data: { message: 'Direct charge is unavailable for this operator' },
+          },
+        })),
+      )
+      .mockReturnValueOnce(
+        of({
+          data: {
+            id: 'hosted-provider-id',
+            status: 'payin_pending',
+            data: {
+              transactionRef: 'HOSTED-REF',
+              paymentLink:
+                'https://checkout.flutterwave.com/v3/hosted/pay/fallback',
+            },
+          },
+          headers: { 'content-type': 'application/json' },
+        } as AxiosResponse),
+      );
+
+    const result = await service.createDirectCharge({
+      amount: 5000,
+      reason: 'Tingilin payment ABC123 x1',
+      userEmail: 'user@example.com',
+      userPhone: '237691224472',
+      userCountry: 'Cameroon',
+      senderName: 'Test User',
+      paymentMethodCode: 'ORANGE',
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      id: 'hosted-provider-id',
+      paymentFlow: 'HOSTED_CHECKOUT',
+      paymentLink:
+        'https://checkout.flutterwave.com/v3/hosted/pay/fallback',
+    });
+  });
+
+  it('does not start a second payment after an ambiguous network failure', async () => {
+    const { service, post, get } = createService();
+    post.mockReturnValue(
+      throwError(() => ({ code: 'ECONNRESET', message: 'socket hang up' })),
+    );
+    get.mockReturnValue(
+      of({
+        data: [],
+        headers: { 'content-type': 'application/json' },
+      } as AxiosResponse),
+    );
+
+    await expect(
+      service.createDirectCharge({
+        amount: 5000,
+        reason: 'Tingilin payment ABC123 x1',
+        userEmail: 'user@example.com',
+        userPhone: '237691224472',
+        userCountry: 'Cameroon',
+        senderName: 'Test User',
+        paymentMethodCode: 'MTN',
+      }),
+    ).rejects.toThrow('Digikuntz direct-charge failed');
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledTimes(2);
   });
 
   it('removes insecure checkout aliases from nested response data', async () => {

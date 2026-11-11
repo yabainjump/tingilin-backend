@@ -132,3 +132,24 @@ export async function ensureTicketFulfillmentIndex(
   });
   log(`Created ticket fulfillment index: ${name}`);
 }
+
+export async function ensurePaymentExpirationIndex(
+  collection: PaymentIndexCollection,
+  log: (message: string) => void = () => undefined,
+) {
+  const name = 'status_1_expiresAt_1';
+  const key = { status: 1, expiresAt: 1 } as const;
+  const indexes = await readIndexes(collection);
+  const current = indexes.find(
+    (index) => index.name === name || hasSameKey(index, key),
+  );
+
+  if (current?.name === name && hasSameKey(current, key)) {
+    log(`Payment expiration index already valid: ${name}`);
+    return;
+  }
+  if (current) await collection.dropIndex(String(current.name));
+
+  await collection.createIndex(key, { name });
+  log(`Created payment expiration index: ${name}`);
+}

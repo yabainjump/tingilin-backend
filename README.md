@@ -73,6 +73,7 @@ copy .env.example .env
 | `DIGIKUNTZ_SECRET_KEY`               | Oui (si provider DIGIKUNTZ) | -                                    | Clé API secrète, header `x-secret-key`                                           |
 | `DIGIKUNTZ_CALLBACK_URL`             | Oui (si provider DIGIKUNTZ) | -                                    | Retour utilisateur après le checkout                                             |
 | `DIGIKUNTZ_CHECKOUT_HOSTS`           | Non                         | `checkout.flutterwave.com,app.digikuntz.com` | Hôtes HTTPS autorisés pour le checkout de secours                         |
+| `PAYMENT_PENDING_TTL_MINUTES`        | Non                         | `10`                                  | Expiration automatique des paiements encore en attente                           |
 | `DIGIKUNTZ_WEBHOOK_SIGNATURE_MODE`   | Non                         | `provider-verify`                    | Revérifie chaque webhook auprès de Digikuntz                                     |
 
 `GOOGLE_CLIENT_ID` doit contenir le meme Client OAuth **Application Web** que

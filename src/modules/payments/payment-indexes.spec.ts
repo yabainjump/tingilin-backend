@@ -1,4 +1,8 @@
-import { ensurePaymentIndexes, PAYMENT_INDEXES } from './payment-indexes';
+import {
+  ensurePaymentExpirationIndex,
+  ensurePaymentIndexes,
+  PAYMENT_INDEXES,
+} from './payment-indexes';
 
 describe('ensurePaymentIndexes', () => {
   it('replaces a unique providerRef index and verifies the final state', async () => {
@@ -41,6 +45,21 @@ describe('ensurePaymentIndexes', () => {
 
     await expect(ensurePaymentIndexes(collection)).rejects.toThrow(
       'Payment index verification failed',
+    );
+  });
+
+  it('creates the pending-payment expiration index', async () => {
+    const collection = {
+      indexes: jest.fn(async () => []),
+      dropIndex: jest.fn(),
+      createIndex: jest.fn(async () => 'status_1_expiresAt_1'),
+    };
+
+    await ensurePaymentExpirationIndex(collection);
+
+    expect(collection.createIndex).toHaveBeenCalledWith(
+      { status: 1, expiresAt: 1 },
+      { name: 'status_1_expiresAt_1' },
     );
   });
 });
