@@ -24,7 +24,7 @@ export interface DigikuntzTransactionResponse {
   [key: string]: unknown;
 }
 
-export type DigikuntzPaymentMethodCode = 'ORANGE' | 'MTN';
+export type DigikuntzPaymentMethodCode = 'ORANGEMONEY' | 'MTN';
 
 export type NormalizedDigikuntzStatus =
   | 'pending'
@@ -419,13 +419,18 @@ export class DigikuntzPaymentsService {
     );
   }
 
-  private headers() {
+  private headers(idempotencyKey?: string) {
     this.assertConfigured();
-    return {
+    const headers: Record<string, string> = {
       Accept: 'application/json',
       'x-user-id': this.userId,
       'x-secret-key': this.secretKey,
     };
+    const normalizedKey = String(idempotencyKey ?? '').trim();
+    if (normalizedKey) {
+      headers['Idempotency-Key'] = normalizedKey.slice(0, 255);
+    }
+    return headers;
   }
 
   private decodeJsonPayload(payload: unknown): unknown {
@@ -685,6 +690,8 @@ export class DigikuntzPaymentsService {
     const transactionRef = this.firstRecordValue(records, [
       'transactionRef',
       'transaction_ref',
+      'txRef',
+      'tx_ref',
       'reference',
       'ref',
       'providerRef',
@@ -695,6 +702,7 @@ export class DigikuntzPaymentsService {
         'payment_link',
         'paymentUrl',
         'payment_url',
+        'redirect_url',
         'checkoutUrl',
         'checkout_url',
         'link',
@@ -713,6 +721,7 @@ export class DigikuntzPaymentsService {
       'payment_link',
       'paymentUrl',
       'payment_url',
+      'redirect_url',
       'checkoutUrl',
       'checkout_url',
       'link',
@@ -741,6 +750,7 @@ export class DigikuntzPaymentsService {
     userPhone: string;
     userCountry: string;
     senderName: string;
+    idempotencyKey?: string;
   }) {
     try {
       const url = `${this.baseUrl}/transaction`;
@@ -757,7 +767,9 @@ export class DigikuntzPaymentsService {
       };
 
       const res = await firstValueFrom(
-        this.http.post(url, body, { headers: this.headers() }),
+        this.http.post(url, body, {
+          headers: this.headers(input.idempotencyKey),
+        }),
       );
       const contentType = String(res.headers?.['content-type'] ?? '')
         .trim()
@@ -822,12 +834,15 @@ export class DigikuntzPaymentsService {
     userCountry: string;
     senderName: string;
     paymentMethodCode: DigikuntzPaymentMethodCode;
+    currency: 'XAF';
+    idempotencyKey: string;
   }): Promise<DigikuntzTransactionResponse> {
     try {
       const url = `${this.baseUrl}/direct-charge`;
       this.assertConfigured();
       const body = {
         estimation: input.amount,
+        currency: input.currency,
         userPhone: input.userPhone,
         userEmail: input.userEmail,
         userCountry: input.userCountry,
@@ -838,7 +853,9 @@ export class DigikuntzPaymentsService {
       };
 
       const res = await firstValueFrom(
-        this.http.post(url, body, { headers: this.headers() }),
+        this.http.post(url, body, {
+          headers: this.headers(input.idempotencyKey),
+        }),
       );
       const payload = this.decodeJsonPayload(res.data);
 
@@ -919,6 +936,7 @@ export class DigikuntzPaymentsService {
           userPhone: input.userPhone,
           userCountry: input.userCountry,
           senderName: input.senderName,
+          idempotencyKey: input.idempotencyKey,
         });
       }
 

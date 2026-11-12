@@ -81,15 +81,20 @@ copy .env.example .env
 l'emetteur, l'expiration et l'email verifie avant de creer ou connecter un
 compte. Ne pas utiliser le Client OAuth Android comme audience.
 
-Documentation officielle vérifiée : https://app.digikuntz.com/dev/api-doc.
+Documentation officielle vérifiée le 12 novembre 2026 :
+https://app.digikuntz.com/dev/api-doc.
 Le paiement utilisateur utilise `POST /dev/direct-charge` avec les headers
-serveur `x-user-id` et `x-secret-key`. Les clés ne doivent jamais être placées
-dans l'application Ionic. Le code de méthode est `ORANGE` ou `MTN`, et le
-numéro camerounais est envoyé au format international `2376XXXXXXXX`.
+serveur `x-user-id`, `x-secret-key` et un `Idempotency-Key` stable par
+transaction. Les clés ne doivent jamais être placées dans l'application Ionic.
+La valeur Orange de l'interface (`ORANGE`) est traduite côté serveur vers le
+code fournisseur documenté `ORANGEMONEY`; MTN reste `MTN`. La devise `XAF` et
+le numéro camerounais au format international `2376XXXXXXXX` sont envoyés.
 
 Une réponse directe valide peut ne contenir aucun `paymentLink` : l'utilisateur
 confirme alors la demande sur son téléphone. Si Digikuntz renvoie son checkout
-de secours, seuls les hôtes HTTPS de `DIGIKUNTZ_CHECKOUT_HOSTS` sont acceptés.
+de secours après un refus direct (`DIRECT_CHARGE_REFUSED`), seuls les hôtes
+HTTPS de `DIGIKUNTZ_CHECKOUT_HOSTS` sont acceptés. Un timeout ou une erreur 5xx
+reste en réconciliation et ne déclenche pas un second paiement.
 
 Dans l'espace développeur Digikuntz, configure l'URL webhook de production :
 `https://backend.tinguilin.yaba-in.com/api/v1/payments/digikuntz/webhook`.

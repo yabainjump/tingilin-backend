@@ -304,4 +304,11 @@ describe('PaymentsService', () => {
   ])('normalizes Cameroon phone %s', (input, expected) => {
     expect((service as any).normalizePhone(input)).toBe(expected);
   });
+
+  it.each([
+    ['ORANGE', 'ORANGEMONEY'],
+    ['MTN', 'MTN'],
+  ])('maps UI payment method %s to Digikuntz code %s', (input, expected) => {
+    expect((service as any).digikuntzPaymentMethodCode(input)).toBe(expected);
+  });
 });

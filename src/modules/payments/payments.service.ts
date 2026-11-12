@@ -18,6 +18,7 @@ import { Transaction, TransactionDocument } from './schemas/transaction.schema';
 import { ParticipationsService } from '../participations/participations.service';
 import { MockFailDto } from './dto/mock-fail.dto';
 import {
+  DigikuntzPaymentMethodCode,
   DigikuntzPaymentsService,
   normalizeDigikuntzStatus,
 } from './providers/digikuntz-payments.service';
@@ -516,6 +517,12 @@ export class PaymentsService {
     return value.toLowerCase();
   }
 
+  private digikuntzPaymentMethodCode(
+    method: 'ORANGE' | 'MTN',
+  ): DigikuntzPaymentMethodCode {
+    return method === 'ORANGE' ? 'ORANGEMONEY' : 'MTN';
+  }
+
   private firstNonEmpty(...values: unknown[]): string {
     for (const value of values) {
       const normalized =
@@ -937,6 +944,7 @@ export class PaymentsService {
     const requestedProvider =
       dto.provider ?? (this.mockPaymentsEnabled() ? 'MOCK' : 'DIGIKUNTZ');
     const provider = requestedProvider;
+    const currency = String(raffle.currency ?? 'XAF').toUpperCase();
 
     if (provider === 'MOCK' && !this.mockPaymentsEnabled()) {
       throw new BadRequestException('Mock payments are disabled');
@@ -945,6 +953,11 @@ export class PaymentsService {
     // Validate the provider before persisting a PENDING transaction. Otherwise a
     // configuration error leaves an unusable idempotent intent without checkout URL.
     if (provider === 'DIGIKUNTZ') {
+      if (currency !== 'XAF') {
+        throw new BadRequestException(
+          'DIGIKUNTZ direct charge currently supports XAF raffles only',
+        );
+      }
       this.digikuntz.assertConfigured();
       await this.digikuntz.assertAccessible();
     }
@@ -1063,7 +1076,7 @@ export class PaymentsService {
         raffleId: new Types.ObjectId(dto.raffleId),
         quantity,
         amount,
-        currency: raffle.currency ?? 'XAF',
+        currency,
         provider,
         status: 'PENDING',
         idempotencyKey: idempotencyKey ?? undefined,
@@ -1107,7 +1120,11 @@ export class PaymentsService {
         userPhone: digikuntzInput!.userPhone,
         userCountry: digikuntzInput!.userCountry,
         senderName: digikuntzInput!.senderName,
-        paymentMethodCode: digikuntzInput!.paymentMethodCode,
+        paymentMethodCode: this.digikuntzPaymentMethodCode(
+          digikuntzInput!.paymentMethodCode,
+        ),
+        currency: 'XAF',
+        idempotencyKey: `tingilin-${tx._id.toString()}`,
       });
       const payinData =
         payin?.data && typeof payin.data === 'object' ? payin.data : {};

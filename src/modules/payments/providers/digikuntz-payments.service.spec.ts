@@ -155,12 +155,15 @@ describe('DigikuntzPaymentsService', () => {
       userCountry: 'Cameroon',
       senderName: 'Test User',
       paymentMethodCode: 'MTN',
+      currency: 'XAF',
+      idempotencyKey: 'tingilin-direct-test',
     });
 
     expect(post).toHaveBeenCalledWith(
       'https://app.digikuntz.com/dev/direct-charge',
       {
         estimation: 5000,
+        currency: 'XAF',
         userPhone: '237691224472',
         userEmail: 'user@example.com',
         userCountry: 'Cameroon',
@@ -174,6 +177,7 @@ describe('DigikuntzPaymentsService', () => {
           Accept: 'application/json',
           'x-user-id': 'account-user-id',
           'x-secret-key': 'SK-secret',
+          'Idempotency-Key': 'tingilin-direct-test',
         },
       },
     );
@@ -224,6 +228,8 @@ describe('DigikuntzPaymentsService', () => {
       userCountry: 'Cameroon',
       senderName: 'Test User',
       paymentMethodCode: 'MTN',
+      currency: 'XAF',
+      idempotencyKey: 'tingilin-disabled-test',
     });
 
     expect(post).toHaveBeenCalledTimes(2);
@@ -244,6 +250,7 @@ describe('DigikuntzPaymentsService', () => {
           Accept: 'application/json',
           'x-user-id': 'account-user-id',
           'x-secret-key': 'SK-secret',
+          'Idempotency-Key': 'tingilin-disabled-test',
         },
       },
     );
@@ -290,7 +297,9 @@ describe('DigikuntzPaymentsService', () => {
       userPhone: '237691224472',
       userCountry: 'Cameroon',
       senderName: 'Test User',
-      paymentMethodCode: 'ORANGE',
+      paymentMethodCode: 'ORANGEMONEY',
+      currency: 'XAF',
+      idempotencyKey: 'tingilin-rejection-test',
     });
 
     expect(post).toHaveBeenCalledTimes(2);
@@ -323,6 +332,8 @@ describe('DigikuntzPaymentsService', () => {
         userCountry: 'Cameroon',
         senderName: 'Test User',
         paymentMethodCode: 'MTN',
+        currency: 'XAF',
+        idempotencyKey: 'tingilin-ambiguous-test',
       }),
     ).rejects.toThrow('Digikuntz direct-charge failed');
 
@@ -668,6 +679,50 @@ describe('DigikuntzPaymentsService', () => {
       paymentLink: 'https://checkout.flutterwave.com/v3/hosted/pay/abc123',
     });
     expect(get).toHaveBeenCalledTimes(3);
+  });
+
+  it('recognizes the documented direct-charge refusal response as hosted fallback', async () => {
+    const { service, post } = createService();
+    post.mockReturnValue(
+      of({
+        status: 201,
+        data: {
+          id: 'provider-id',
+          status: 'payin_pending',
+          data: {
+            transactionRef: 'IN401#261111010055',
+            txRef: 'txPayin-1794355268504-3258c0a6',
+            paymentLink:
+              'https://checkout.flutterwave.com/v3/hosted/pay/fallback',
+            redirect_url:
+              'https://checkout.flutterwave.com/v3/hosted/pay/fallback',
+            chargeStatus: 'failed',
+            fallback: { reason: 'DIRECT_CHARGE_REFUSED' },
+          },
+        },
+      } as AxiosResponse),
+    );
+
+    const result = await service.createDirectCharge({
+      amount: 5000,
+      reason: 'Tingilin payment REFUSED1 x1',
+      userEmail: 'user@example.com',
+      userPhone: '237691224472',
+      userCountry: 'Cameroon',
+      senderName: 'Test User',
+      paymentMethodCode: 'ORANGEMONEY',
+      currency: 'XAF',
+      idempotencyKey: 'tingilin-refused-test',
+    });
+
+    expect(result).toMatchObject({
+      id: 'provider-id',
+      transactionRef: 'IN401#261111010055',
+      paymentFlow: 'HOSTED_CHECKOUT',
+      paymentLink:
+        'https://checkout.flutterwave.com/v3/hosted/pay/fallback',
+    });
+    expect(result.data?.redirect_url).toBeUndefined();
   });
 
   it('rejects an HTML response returned instead of the payment API JSON', async () => {
