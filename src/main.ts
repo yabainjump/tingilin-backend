@@ -1,5 +1,7 @@
+import './common/config/threadpool';
 import { Logger, RequestMethod, ValidationPipe } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
+import { HttpAdapterHost, NestFactory } from '@nestjs/core';
+import { DatabaseAvailabilityFilter } from './common/database/database-availability';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { json, static as expressStatic, urlencoded } from 'express';
@@ -84,6 +86,10 @@ async function bootstrap() {
       { path: 'health/*path', method: RequestMethod.ALL },
     ],
   });
+
+  app.useGlobalFilters(
+    new DatabaseAvailabilityFilter(app.get(HttpAdapterHost).httpAdapter),
+  );
 
   app.useGlobalPipes(
     new ValidationPipe({

@@ -91,6 +91,9 @@ export class RafflesLiveGateway
   private timer?: NodeJS.Timeout;
   private recentWinnersCache?: CachedValue<LiveWinnerDto[]>;
   private liveTicketsCache?: CachedValue<string[]>;
+  private lastPayload?: LiveDrawPayload;
+  private lastPayloadAt = 0;
+  private payloadInFlight?: Promise<LiveDrawPayload>;
 
   constructor(
     @InjectModel(Raffle.name)
@@ -193,11 +196,37 @@ return v`,
 
   private async pushUpdateToClient(client: Socket) {
     try {
-      const payload = await this.buildPayload();
-      client.emit('live_draw:update', payload);
+      // Un nouveau spectateur recoit le dernier etat diffuse (rafraichi toutes
+      // les 3 s) au lieu de declencher sa propre construction: pendant un afflux,
+      // 1000 connexions = 0 requete Mongo en plus, et l'animation n'avance plus
+      // a chaque connexion.
+      const recent =
+        this.lastPayload && Date.now() - this.lastPayloadAt < 10_000
+          ? this.lastPayload
+          : await this.buildPayloadShared();
+      client.emit('live_draw:update', {
+        ...recent,
+        viewersLive: await this.currentViewerCount(),
+      });
     } catch (error) {
       this.logger.warn(`pushUpdateToClient failed: ${String(error)}`);
     }
+  }
+
+  /** Une seule construction de payload a la fois, partagee par les appelants. */
+  private buildPayloadShared(): Promise<LiveDrawPayload> {
+    if (!this.payloadInFlight) {
+      this.payloadInFlight = this.buildPayload()
+        .then((payload) => {
+          this.lastPayload = payload;
+          this.lastPayloadAt = Date.now();
+          return payload;
+        })
+        .finally(() => {
+          this.payloadInFlight = undefined;
+        });
+    }
+    return this.payloadInFlight;
   }
 
   private async broadcastUpdate() {
@@ -223,7 +252,7 @@ return v`,
     }
 
     try {
-      const payload = await this.buildPayload();
+      const payload = await this.buildPayloadShared();
       this.server.emit('live_draw:update', payload);
     } catch (error) {
       this.logger.warn(`broadcastUpdate failed: ${String(error)}`);

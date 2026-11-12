@@ -1,4 +1,7 @@
-import { ServiceUnavailableException } from '@nestjs/common';
+import {
+  ConflictException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { AxiosResponse } from 'axios';
@@ -339,6 +342,72 @@ describe('DigikuntzPaymentsService', () => {
 
     expect(post).toHaveBeenCalledTimes(1);
     expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  const directChargeInput = {
+    amount: 5000,
+    reason: 'Tingilin payment ABC123 x1',
+    userEmail: 'user@example.com',
+    userPhone: '237677123456',
+    userCountry: 'Cameroon',
+    senderName: 'Test User',
+    paymentMethodCode: 'MTN' as const,
+    currency: 'XAF' as const,
+    idempotencyKey: 'tingilin-doc-test',
+  };
+
+  it('looks the payin up by id after an ambiguous 502 that carries the id (documented flow)', async () => {
+    const { service, post, get } = createService();
+    post.mockReturnValue(
+      throwError(() => ({
+        response: {
+          status: 502,
+          data: { id: '6af3b70df7bdee716adaa851', message: 'Upstream timeout' },
+        },
+      })),
+    );
+    get.mockReturnValue(
+      of({
+        data: {
+          id: '6af3b70df7bdee716adaa851',
+          status: 'payin_pending',
+          data: { transactionRef: 'IN535#261111013004' },
+        },
+        headers: { 'content-type': 'application/json' },
+      } as AxiosResponse),
+    );
+
+    const result = await service.createDirectCharge(directChargeInput);
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith('https://app.digikuntz.com/dev/transaction', {
+      headers: expect.any(Object),
+      params: { transactionId: '6af3b70df7bdee716adaa851' },
+    });
+    expect(result).toMatchObject({
+      id: '6af3b70df7bdee716adaa851',
+      transactionRef: 'IN535#261111013004',
+      paymentFlow: 'DIRECT_CHARGE',
+    });
+  });
+
+  it('reports an in-progress idempotent request (409) as a conflict, not a refusal', async () => {
+    const { service, post } = createService();
+    post.mockReturnValue(
+      throwError(() => ({
+        response: {
+          status: 409,
+          data: {
+            message: 'Request with this Idempotency-Key is still in progress',
+          },
+        },
+      })),
+    );
+
+    await expect(service.createDirectCharge(directChargeInput)).rejects.toThrow(
+      ConflictException,
+    );
+    expect(post).toHaveBeenCalledTimes(1);
   });
 
   it('removes insecure checkout aliases from nested response data', async () => {

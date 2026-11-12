@@ -76,6 +76,23 @@ export class Transaction {
 
   @Prop({ type: String, required: false, default: undefined })
   rawProviderStatus?: string;
+
+  /**
+   * Reservation du stock de tickets sur la tombola, faite HORS transaction
+   * par un seul $inc atomique (le document tombola est le point chaud: le
+   * modifier dans chaque transaction provoquait des WriteConflict en cascade).
+   * CLAIMING = un finaliseur est en train de reserver, RESERVED = stock pris.
+   */
+  @Prop({
+    type: String,
+    enum: ['CLAIMING', 'RESERVED'],
+    required: false,
+    default: undefined,
+  })
+  stockState?: 'CLAIMING' | 'RESERVED';
+
+  @Prop({ type: Date, required: false, default: undefined })
+  stockClaimedAt?: Date;
 }
 
 export const TransactionSchema = SchemaFactory.createForClass(Transaction);

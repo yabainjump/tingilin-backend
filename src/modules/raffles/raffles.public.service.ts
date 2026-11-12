@@ -26,9 +26,19 @@ type RaffleLean = {
 type ProductLean = {
   _id: Types.ObjectId;
   title: string;
+  description?: string;
+  imageUrl?: string;
   images?: string[];
   status: string;
 };
+
+const PUBLIC_PRODUCT_FIELDS = {
+  title: 1,
+  description: 1,
+  imageUrl: 1,
+  images: 1,
+  status: 1,
+} as const;
 
 @Injectable()
 export class RafflesPublicService {
@@ -81,7 +91,7 @@ export class RafflesPublicService {
 
     const products = await this.productModel
       .find({ _id: { $in: productIds } })
-      .select({ title: 1, images: 1, status: 1 })
+      .select(PUBLIC_PRODUCT_FIELDS)
       .lean<ProductLean[]>()
       .exec();
 
@@ -130,7 +140,7 @@ export class RafflesPublicService {
     const product: any = raffle.productId
       ? await this.productModel
           .findById(raffle.productId)
-          .select({ title: 1, images: 1, status: 1 })
+          .select(PUBLIC_PRODUCT_FIELDS)
           .lean()
           .exec()
       : null;
@@ -204,7 +214,7 @@ export class RafflesPublicService {
     const product: any = raffle.productId
       ? await this.productModel
           .findById(raffle.productId)
-          .select({ title: 1, images: 1, status: 1 })
+          .select(PUBLIC_PRODUCT_FIELDS)
           .lean()
           .exec()
       : null;

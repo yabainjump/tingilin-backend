@@ -50,7 +50,11 @@ export class ParticipationsService {
     const wasCreated = (res as any).upsertedCount
       ? (res as any).upsertedCount > 0
       : !!(res as any).upsertedId;
-    return { wasCreated };
+    // createIntent cree deja la participation (getOrCreate, totalTicketsBought=0)
+    // avant le paiement: `wasCreated` est donc presque toujours false. Le vrai
+    // signal "nouveau participant" est le passage de 0 a >0 ticket achete.
+    const isFirstPurchase = already <= 0;
+    return { wasCreated, isFirstPurchase };
   }
 
   /**

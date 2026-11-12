@@ -20,11 +20,16 @@ describe('RafflesPublicService legacy product compatibility', () => {
     const product = {
       _id: productId,
       title: 'Legacy phone',
+      description: 'Un smartphone haut de gamme.',
+      imageUrl: '/uploads/products/legacy-phone.webp',
       images: [],
       status: 'DRAFT',
     };
     const raffleExec = jest.fn().mockResolvedValue([raffle]);
     const productExec = jest.fn().mockResolvedValue([product]);
+    const productSelect = jest.fn().mockReturnValue({
+      lean: jest.fn().mockReturnValue({ exec: productExec }),
+    });
     const raffleModel = {
       find: jest.fn().mockReturnValue({
         select: jest.fn().mockReturnValue({
@@ -38,9 +43,7 @@ describe('RafflesPublicService legacy product compatibility', () => {
     };
     const productModel = {
       find: jest.fn().mockReturnValue({
-        select: jest.fn().mockReturnValue({
-          lean: jest.fn().mockReturnValue({ exec: productExec }),
-        }),
+        select: productSelect,
       }),
     };
     const cache = {
@@ -57,11 +60,22 @@ describe('RafflesPublicService legacy product compatibility', () => {
     expect(productModel.find).toHaveBeenCalledWith({
       _id: { $in: [productId] },
     });
+    expect(productSelect).toHaveBeenCalledWith({
+      title: 1,
+      description: 1,
+      imageUrl: 1,
+      images: 1,
+      status: 1,
+    });
     expect(result).toEqual([
       expect.objectContaining({
         _id: raffleId.toString(),
         status: RaffleStatus.LIVE,
-        product: expect.objectContaining({ title: 'Legacy phone' }),
+        product: expect.objectContaining({
+          title: 'Legacy phone',
+          description: 'Un smartphone haut de gamme.',
+          imageUrl: '/uploads/products/legacy-phone.webp',
+        }),
       }),
     ]);
   });
@@ -83,17 +97,20 @@ describe('RafflesPublicService legacy product compatibility', () => {
         }),
       }),
     };
+    const productSelect = jest.fn().mockReturnValue({
+      lean: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue({
+          _id: productId,
+          title: 'Legacy phone',
+          description: 'Un smartphone haut de gamme.',
+          imageUrl: '/uploads/products/legacy-phone.webp',
+          status: 'DRAFT',
+        }),
+      }),
+    });
     const productModel = {
       findById: jest.fn().mockReturnValue({
-        select: jest.fn().mockReturnValue({
-          lean: jest.fn().mockReturnValue({
-            exec: jest.fn().mockResolvedValue({
-              _id: productId,
-              title: 'Legacy phone',
-              status: 'DRAFT',
-            }),
-          }),
-        }),
+        select: productSelect,
       }),
     };
     const service = new RafflesPublicService(
@@ -106,8 +123,19 @@ describe('RafflesPublicService legacy product compatibility', () => {
       expect.objectContaining({
         _id: raffleId.toString(),
         status: RaffleStatus.LIVE,
-        product: expect.objectContaining({ title: 'Legacy phone' }),
+        product: expect.objectContaining({
+          title: 'Legacy phone',
+          description: 'Un smartphone haut de gamme.',
+          imageUrl: '/uploads/products/legacy-phone.webp',
+        }),
       }),
     );
+    expect(productSelect).toHaveBeenCalledWith({
+      title: 1,
+      description: 1,
+      imageUrl: 1,
+      images: 1,
+      status: 1,
+    });
   });
 });

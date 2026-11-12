@@ -36,6 +36,7 @@ import {
   getWebhookSignatureMode,
   parseBooleanFlag,
 } from '../../common/config/runtime-security';
+import { detectCameroonMobileOperator } from '../../common/utils/phone.util';
 
 type DashboardGranularity = 'DAY' | 'MONTH' | 'YEAR';
 
@@ -542,6 +543,32 @@ export class PaymentsService {
     return '';
   }
 
+  /**
+   * Enregistre le lien de checkout de secours que Digikuntz cree quand le
+   * prelevement direct est refuse (data.paymentLink / redirect_url, avec
+   * data.chargeStatus="failed" et data.fallback.reason="DIRECT_CHARGE_REFUSED").
+   * `remote.paymentLink` est deja filtre (HTTPS + hotes de confiance) par
+   * DigikuntzPaymentsService.normalizeTransactionResponse.
+   */
+  private captureHostedFallbackLink(
+    tx: TransactionDocument,
+    remote: Record<string, any> | null | undefined,
+  ): void {
+    const link = this.safeHttpsUrl(remote?.paymentLink);
+    if (!link || link === tx.paymentLink) return;
+
+    tx.paymentLink = link;
+    tx.paymentFlow = 'HOSTED_CHECKOUT';
+    const data =
+      remote?.data && typeof remote.data === 'object' ? remote.data : {};
+    const reason = String(data?.fallback?.reason ?? data?.chargeStatus ?? '')
+      .replace(/[^a-zA-Z0-9_-]/g, '')
+      .slice(0, 40);
+    this.logger.log(
+      `[PAYMENT_FLOW] direct_charge_fallback transactionId=${tx._id.toString()} reason=${reason || 'unknown'} checkoutHost=${new URL(link).hostname.toLowerCase()}`,
+    );
+  }
+
   private safeHttpsUrl(value: unknown): string {
     const raw = typeof value === 'string' ? value.trim() : '';
     if (!raw) return '';
@@ -853,12 +880,119 @@ export class PaymentsService {
       .exec();
   }
 
+  /** Au-dela, une reservation CLAIMING est consideree abandonnee (crash). */
+  private static readonly STOCK_CLAIM_STALE_MS = 60_000;
+
+  /**
+   * Reserve le stock de tickets de la tombola pour CETTE transaction, une
+   * seule fois, par un $inc atomique HORS transaction Mongo.
+   *
+   * Pourquoi: le document tombola est commun a tous les acheteurs. Le modifier
+   * dans chaque transaction multi-documents provoquait des WriteConflict en
+   * cascade (test de charge: 2593 transactions avortees pour 64 validees) et
+   * epuisait le pool de connexions. Un $inc simple est serialise par Mongo
+   * sans conflit.
+   *
+   * Retourne true si cet appel a pris la reservation (il doit alors la liberer
+   * si la finalisation echoue).
+   */
+  private async reserveRaffleStock(tx: TransactionDocument): Promise<boolean> {
+    if (tx.stockState === 'RESERVED') return false;
+
+    const claimedAt = new Date();
+    const staleBefore = new Date(
+      claimedAt.getTime() - PaymentsService.STOCK_CLAIM_STALE_MS,
+    );
+    const claimed = await this.txModel
+      .findOneAndUpdate(
+        {
+          _id: tx._id,
+          status: { $ne: 'SUCCESS' },
+          $or: [
+            { stockState: { $exists: false } },
+            { stockState: null },
+            { stockState: 'CLAIMING', stockClaimedAt: { $lte: staleBefore } },
+          ],
+        },
+        { $set: { stockState: 'CLAIMING', stockClaimedAt: claimedAt } },
+        { new: true },
+      )
+      .exec();
+
+    if (!claimed) {
+      const current = await this.txModel
+        .findById(tx._id)
+        .select('status stockState')
+        .lean()
+        .exec();
+      if (current?.status === 'SUCCESS' || current?.stockState === 'RESERVED') {
+        return false;
+      }
+      throw new ConflictException('Payment fulfillment already in progress');
+    }
+
+    const claimFilter = {
+      _id: tx._id,
+      stockState: 'CLAIMING' as const,
+      stockClaimedAt: claimedAt,
+    };
+    try {
+      await this.rafflesService.incrementStats(
+        tx.raffleId.toString(),
+        tx.quantity,
+        0,
+        undefined,
+        true,
+      );
+    } catch (error) {
+      await this.txModel
+        .updateOne(claimFilter, { $unset: { stockState: 1, stockClaimedAt: 1 } })
+        .exec()
+        .catch(() => undefined);
+      throw error;
+    }
+
+    await this.txModel
+      .updateOne(claimFilter, { $set: { stockState: 'RESERVED' } })
+      .exec();
+    return true;
+  }
+
+  /** Rend le stock si la transaction n'a finalement pas ete finalisee. */
+  private async releaseRaffleStock(tx: TransactionDocument): Promise<void> {
+    const released = await this.txModel
+      .updateOne(
+        { _id: tx._id, status: { $ne: 'SUCCESS' }, stockState: 'RESERVED' },
+        { $unset: { stockState: 1, stockClaimedAt: 1 } },
+      )
+      .exec();
+    if (Number(released?.modifiedCount ?? 0) !== 1) return;
+
+    await this.rafflesService
+      .incrementStats(tx.raffleId.toString(), -tx.quantity, 0)
+      .catch((error: unknown) => {
+        this.logger.error(
+          `Failed to release ${tx.quantity} reserved ticket(s) for transaction=${tx._id.toString()}: ${String((error as Error)?.message ?? error).slice(0, 200)}`,
+        );
+      });
+  }
+
   private async finalizeSuccessfulTransaction(transactionId: string) {
+    const initial = await this.txModel.findById(transactionId).exec();
+    if (!initial) throw new NotFoundException('Transaction not found');
+    if (initial.status === 'SUCCESS') return initial;
+    if (initial.status !== 'PENDING' && !this.isExpiredPayment(initial)) {
+      throw new BadRequestException('Transaction not pending');
+    }
+
+    const reservedHere = await this.reserveRaffleStock(initial);
     const session = await this.connection.startSession();
     let finalized: TransactionDocument | null = null;
+    let firstPurchase = false;
 
     try {
       await session.withTransaction(async () => {
+        firstPurchase = false;
         const tx = await this.txModel
           .findById(transactionId)
           .session(session)
@@ -872,12 +1006,23 @@ export class PaymentsService {
         if (tx.status !== 'PENDING' && !expiredPayment) {
           throw new BadRequestException('Transaction not pending');
         }
+        if (tx.stockState !== 'RESERVED') {
+          throw new ConflictException(
+            'Ticket reservation is not ready; retry payment verification',
+          );
+        }
 
         if (expiredPayment) {
-          tx.status = 'PENDING';
           tx.failReason = undefined;
           tx.failedAt = undefined;
         }
+
+        // La transaction est ecrite en premier: un finaliseur concurrent
+        // (webhook + verify) entre en conflit tout de suite et relit SUCCESS,
+        // au lieu d'emettre les tickets une seconde fois.
+        tx.status = 'SUCCESS';
+        tx.confirmedAt = new Date();
+        await tx.save({ session });
 
         const part = await this.participationsService.upsertAfterPurchase(
           {
@@ -887,13 +1032,7 @@ export class PaymentsService {
           },
           session,
         );
-        await this.rafflesService.incrementStats(
-          tx.raffleId.toString(),
-          tx.quantity,
-          part.wasCreated ? 1 : 0,
-          session,
-          true,
-        );
+        firstPurchase = part.isFirstPurchase;
         await this.ticketsService.createMany(
           {
             raffleId: tx.raffleId.toString(),
@@ -904,12 +1043,13 @@ export class PaymentsService {
           session,
         );
         await this.appendLedgerCashIn(tx, session);
-
-        tx.status = 'SUCCESS';
-        tx.confirmedAt = new Date();
-        await tx.save({ session });
         finalized = tx;
       });
+    } catch (error) {
+      if (reservedHere) {
+        await this.releaseRaffleStock(initial).catch(() => undefined);
+      }
+      throw error;
     } finally {
       await session.endSession();
     }
@@ -917,10 +1057,18 @@ export class PaymentsService {
     if (!finalized) {
       throw new BadGatewayException('Payment fulfillment did not complete');
     }
-    await this.usersService.evaluateMilestones(
-      (finalized as TransactionDocument).userId.toString(),
-    );
-    return finalized as TransactionDocument;
+    const done = finalized as TransactionDocument;
+    if (firstPurchase) {
+      await this.rafflesService
+        .incrementStats(done.raffleId.toString(), 0, 1)
+        .catch((error: unknown) => {
+          this.logger.warn(
+            `participantsCount increment failed for raffle=${done.raffleId.toString()}: ${String((error as Error)?.message ?? error).slice(0, 200)}`,
+          );
+        });
+    }
+    await this.usersService.evaluateMilestones(done.userId.toString());
+    return done;
   }
 
   async createIntent(userId: string, dto: CreateIntentDto) {
@@ -1008,6 +1156,18 @@ export class PaymentsService {
       ) {
         throw new BadRequestException(
           'DIGIKUNTZ direct charge requires a valid Cameroon phone, email, sender name, country and payment method',
+        );
+      }
+
+      // paymentMethodCode est envoye a Digikuntz comme override explicite: un
+      // numero MTN facture en ORANGEMONEY (ou l'inverse) est refuse par
+      // Flutterwave. On bloque avant de creer quoi que ce soit chez le provider.
+      const phoneOperator = detectCameroonMobileOperator(userPhone);
+      if (phoneOperator && phoneOperator !== paymentMethodCode) {
+        const label = (op: 'ORANGE' | 'MTN') =>
+          op === 'MTN' ? 'MTN Mobile Money' : 'Orange Money';
+        throw new BadRequestException(
+          `Ce numéro est un numéro ${label(phoneOperator)}. Choisis ${label(phoneOperator)} ou utilise un numéro ${label(paymentMethodCode)}.`,
         );
       }
 
@@ -2052,10 +2212,14 @@ export class PaymentsService {
   async useFreeTicket(userId: string, dto: CreateFreeTicketDto) {
     const raffle = await this.rafflesService.adminGetById(dto.raffleId);
     this.assertRafflePurchasable(raffle);
+    // Stock reserve hors transaction (meme raison que finalizeSuccessfulTransaction:
+    // le document tombola est le point chaud partage par tous les acheteurs).
+    await this.rafflesService.incrementStats(dto.raffleId, 1, 0, undefined, true);
     const session = await this.connection.startSession();
-    const outcome: { tx?: TransactionDocument } = {};
+    const outcome: { tx?: TransactionDocument; firstPurchase?: boolean } = {};
     try {
       await session.withTransaction(async () => {
+        outcome.firstPurchase = false;
         await this.usersService.consumeFreeTickets(userId, 1, session);
         const created = await this.txModel.create(
           [
@@ -2068,6 +2232,7 @@ export class PaymentsService {
               provider: 'FREE_TICKET',
               status: 'PENDING',
               providerRef: `FREE-${crypto.randomUUID()}`,
+              stockState: 'RESERVED',
             },
           ],
           { session },
@@ -2078,13 +2243,7 @@ export class PaymentsService {
           { raffleId: dto.raffleId, userId, quantity: 1 },
           session,
         );
-        await this.rafflesService.incrementStats(
-          dto.raffleId,
-          1,
-          part.wasCreated ? 1 : 0,
-          session,
-          true,
-        );
+        outcome.firstPurchase = part.isFirstPurchase;
         await this.ticketsService.createMany(
           {
             raffleId: dto.raffleId,
@@ -2098,12 +2257,27 @@ export class PaymentsService {
         pendingTx.confirmedAt = new Date();
         await pendingTx.save({ session });
       });
+    } catch (error) {
+      outcome.tx = undefined;
+      await this.rafflesService
+        .incrementStats(dto.raffleId, -1, 0)
+        .catch((releaseError: unknown) => {
+          this.logger.error(
+            `Failed to release free-ticket reservation for raffle=${dto.raffleId}: ${String((releaseError as Error)?.message ?? releaseError).slice(0, 200)}`,
+          );
+        });
+      throw error;
     } finally {
       await session.endSession();
     }
 
     const tx = outcome.tx;
     if (!tx) throw new BadGatewayException('Free ticket fulfillment failed');
+    if (outcome.firstPurchase) {
+      await this.rafflesService
+        .incrementStats(dto.raffleId, 0, 1)
+        .catch(() => undefined);
+    }
 
     await this.usersService.evaluateMilestones(userId);
 
@@ -2274,8 +2448,20 @@ export class PaymentsService {
           remoteStatus: 'payment_expired',
         };
       }
+      // Doc Digikuntz: si Flutterwave refuse le prelevement direct, le payin
+      // reste payin_pending et data.paymentLink porte un lien de checkout de
+      // secours. Sans le remonter, l'app attendait une validation USSD qui
+      // n'arrivera jamais, jusqu'a expiration (10 min).
+      this.captureHostedFallbackLink(tx, remote);
       await tx.save();
-      return { ok: true, status: 'PENDING', remoteStatus };
+      return {
+        ok: true,
+        transactionId: tx._id.toString(),
+        status: 'PENDING',
+        remoteStatus,
+        paymentFlow: tx.paymentFlow ?? undefined,
+        paymentLink: tx.paymentLink ?? undefined,
+      };
     }
 
     if (normalizedStatus === 'success') {
@@ -2418,6 +2604,9 @@ export class PaymentsService {
     }
 
     if (normalizedStatus === 'pending') {
+      // Seulement depuis la reponse relue chez le provider (jamais depuis le
+      // corps brut du webhook): lien de secours apres refus du direct charge.
+      if (remote) this.captureHostedFallbackLink(tx, remote);
       await tx.save();
       return { ok: true, transactionId: tx._id.toString(), status: tx.status };
     }

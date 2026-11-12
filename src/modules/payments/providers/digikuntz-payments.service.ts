@@ -1,6 +1,7 @@
 import {
   BadGatewayException,
   BadRequestException,
+  ConflictException,
   HttpException,
   Inject,
   Injectable,
@@ -407,6 +408,15 @@ export class DigikuntzPaymentsService {
     const status = Number(response.status ?? 0);
     const details = this.providerErrorMessage(response.data);
     const suffix = details ? `: ${details}` : '';
+
+    if (status === 409) {
+      // Doc: "a retry returns 409 Request with this Idempotency-Key is still in
+      // progress". Le paiement n'est PAS refuse: il est en cours chez Digikuntz.
+      // L'app affiche le message 409 et l'utilisateur reverifie ensuite.
+      throw new ConflictException(
+        'Ce paiement est déjà en cours de traitement. Patiente quelques secondes puis vérifie son statut.',
+      );
+    }
 
     if (status >= 400 && status < 500) {
       throw new BadRequestException(
@@ -943,6 +953,32 @@ export class DigikuntzPaymentsService {
       const response = this.asRecord(this.asRecord(e).response);
       const status = Number(response.status ?? 0);
       if (!status || status >= 500) {
+        // Doc: "Upstream 5xx or timeout: the outcome is unknown [...] check
+        // GET /dev/transaction?transactionId=<id> before any retry." Si le corps
+        // de l'erreur porte l'id du payin, on le relit directement (fiable),
+        // sinon on retombe sur la recherche dans la liste.
+        const ambiguousId = this.firstRecordValue(
+          this.transactionRecords(this.decodeJsonPayload(response.data)),
+          ['id', '_id', 'transactionId'],
+        );
+        if (/^[a-f0-9]{24}$/i.test(ambiguousId)) {
+          try {
+            const remote = await this.getTransaction(ambiguousId);
+            if (remote?.id || remote?.transactionRef) {
+              this.logger.log(
+                `Recovered Digikuntz transaction ${ambiguousId} by id after an ambiguous direct-charge failure (status=${status || 'none'})`,
+              );
+              return {
+                ...remote,
+                paymentFlow: remote.paymentLink
+                  ? ('HOSTED_CHECKOUT' as const)
+                  : ('DIRECT_CHARGE' as const),
+              };
+            }
+          } catch {
+            // On continue avec la recherche par montant + libelle.
+          }
+        }
         for (const delay of [300, 900]) {
           if (delay > 0) await this.wait(delay);
           try {

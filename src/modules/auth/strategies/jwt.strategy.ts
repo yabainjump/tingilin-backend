@@ -1,9 +1,14 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { UsersService } from '../../users/users.service';
 import { getRequiredSecret } from '../../../common/config/runtime-security';
+import { isDatabaseAvailabilityError } from '../../../common/database/database-availability';
 
 interface CachedUser {
   user: any;
@@ -25,6 +30,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     Number(process.env.JWT_USER_CACHE_TTL_MS ?? 15000) || 0,
   );
   private readonly cache = new Map<string, CachedUser>();
+  private readonly inFlight = new Map<string, Promise<any>>();
 
   constructor(
     private readonly config: ConfigService,
@@ -60,6 +66,14 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       };
     } catch (error) {
       if (error instanceof UnauthorizedException) throw error;
+      // Base indisponible ou saturee (pool epuise, timeout, reseau): ce n'est
+      // PAS un token invalide. Repondre 401 ferait deconnecter l'utilisateur
+      // par l'app alors que sa session est valide; 503 = "reessaie".
+      if (isDatabaseAvailabilityError(error)) {
+        throw new ServiceUnavailableException(
+          'Service temporarily unavailable, please retry',
+        );
+      }
       throw new UnauthorizedException('Invalid token');
     }
   }
@@ -77,13 +91,28 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       this.cache.delete(userId);
     }
 
-    const user = await this.usersService.findById(userId);
-    if (this.cache.size >= USER_CACHE_MAX_ENTRIES) {
-      // FIFO simple: on evite la croissance illimitee du cache en memoire.
-      const oldest = this.cache.keys().next().value;
-      if (oldest !== undefined) this.cache.delete(oldest);
+    // L'ecran d'accueil envoie ~4 requetes en parallele pour le meme
+    // utilisateur: une seule lecture Mongo partagee au lieu de 4.
+    const pending = this.inFlight.get(userId);
+    if (pending) return pending;
+
+    const lookup = this.usersService.findById(userId).then((user) => {
+      if (this.cache.size >= USER_CACHE_MAX_ENTRIES) {
+        // FIFO simple: on evite la croissance illimitee du cache en memoire.
+        const oldest = this.cache.keys().next().value;
+        if (oldest !== undefined) this.cache.delete(oldest);
+      }
+      this.cache.set(userId, {
+        user,
+        expiresAt: Date.now() + this.cacheTtlMs,
+      });
+      return user;
+    });
+    this.inFlight.set(userId, lookup);
+    try {
+      return await lookup;
+    } finally {
+      this.inFlight.delete(userId);
     }
-    this.cache.set(userId, { user, expiresAt: Date.now() + this.cacheTtlMs });
-    return user;
   }
 }

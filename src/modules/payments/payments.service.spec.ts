@@ -311,4 +311,233 @@ describe('PaymentsService', () => {
   ])('maps UI payment method %s to Digikuntz code %s', (input, expected) => {
     expect((service as any).digikuntzPaymentMethodCode(input)).toBe(expected);
   });
+
+  describe('purchase fulfillment under concurrency', () => {
+    const TX_ID = '665f1a2b3c4d5e6f7a8b9c0d';
+    const RAFFLE_ID = '665f1a2b3c4d5e6f7a8b9c0f';
+    let raffles: { incrementStats: jest.Mock };
+    let participations: { upsertAfterPurchase: jest.Mock };
+    let tickets: { createMany: jest.Mock };
+    let users: { evaluateMilestones: jest.Mock };
+    let session: { withTransaction: jest.Mock; endSession: jest.Mock };
+    let txDoc: any;
+
+    const chain = (value: unknown) => {
+      const q: any = {
+        exec: jest.fn().mockResolvedValue(value),
+      };
+      q.session = jest.fn().mockReturnValue(q);
+      q.select = jest.fn().mockReturnValue(q);
+      q.lean = jest.fn().mockReturnValue(q);
+      return q;
+    };
+
+    beforeEach(() => {
+      txDoc = {
+        _id: { toString: () => TX_ID },
+        userId: { toString: () => 'user-id' },
+        raffleId: { toString: () => RAFFLE_ID },
+        quantity: 3,
+        amount: 1500,
+        currency: 'XAF',
+        provider: 'MOCK',
+        status: 'PENDING',
+        stockState: undefined as string | undefined,
+        save: jest.fn().mockResolvedValue(undefined),
+      };
+      raffles = {
+        incrementStats: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+      };
+      participations = {
+        upsertAfterPurchase: jest
+          .fn()
+          .mockResolvedValue({ wasCreated: false, isFirstPurchase: true }),
+      };
+      tickets = { createMany: jest.fn().mockResolvedValue(undefined) };
+      users = { evaluateMilestones: jest.fn().mockResolvedValue(undefined) };
+      session = {
+        withTransaction: jest.fn(async (fn: () => Promise<void>) => fn()),
+        endSession: jest.fn().mockResolvedValue(undefined),
+      };
+      Object.assign(service as any, {
+        rafflesService: raffles,
+        participationsService: participations,
+        ticketsService: tickets,
+        usersService: users,
+        connection: { startSession: jest.fn().mockResolvedValue(session) },
+      });
+      (service as any).ledgerModel.updateOne.mockReturnValue(chain(undefined));
+
+      // findById sert a la lecture initiale et a la relecture dans la
+      // transaction (apres reservation: stockState=RESERVED).
+      txModelMock.findById.mockImplementation(() => chain(txDoc));
+      txModelMock.findOneAndUpdate = jest.fn(() =>
+        chain({ ...txDoc, stockState: 'CLAIMING' }),
+      );
+      txModelMock.updateOne.mockImplementation(
+        (_filter: unknown, update: any) => {
+          if (update?.$set?.stockState === 'RESERVED') {
+            txDoc.stockState = 'RESERVED';
+          }
+          if (update?.$unset?.stockState) txDoc.stockState = undefined;
+          return chain({ modifiedCount: 1 });
+        },
+      );
+    });
+
+    it('reserves raffle stock with one atomic update OUTSIDE the Mongo transaction', async () => {
+      const result = await (service as any).finalizeSuccessfulTransaction(
+        TX_ID,
+      );
+
+      expect(result.status).toBe('SUCCESS');
+      // Reservation sans session: le document tombola n'est plus dans la transaction.
+      expect(raffles.incrementStats).toHaveBeenNthCalledWith(
+        1,
+        RAFFLE_ID,
+        3,
+        0,
+        undefined,
+        true,
+      );
+      // Apres commit: nouveau participant (bug participantsCount=0 corrige).
+      expect(raffles.incrementStats).toHaveBeenNthCalledWith(
+        2,
+        RAFFLE_ID,
+        0,
+        1,
+      );
+      expect(raffles.incrementStats).toHaveBeenCalledTimes(2);
+      expect(tickets.createMany).toHaveBeenCalledWith(
+        expect.objectContaining({ transactionId: TX_ID, quantity: 3 }),
+        session,
+      );
+      expect(txDoc.save).toHaveBeenCalledWith({ session });
+    });
+
+    it('gives the reserved stock back when the fulfillment transaction fails', async () => {
+      session.withTransaction.mockRejectedValue(
+        new Error('TransientTransactionError'),
+      );
+
+      await expect(
+        (service as any).finalizeSuccessfulTransaction(TX_ID),
+      ).rejects.toThrow('TransientTransactionError');
+
+      expect(raffles.incrementStats).toHaveBeenNthCalledWith(
+        1,
+        RAFFLE_ID,
+        3,
+        0,
+        undefined,
+        true,
+      );
+      expect(raffles.incrementStats).toHaveBeenNthCalledWith(
+        2,
+        RAFFLE_ID,
+        -3,
+        0,
+      );
+      expect(txDoc.stockState).toBeUndefined();
+    });
+
+    it('does not reserve twice when the stock is already reserved (webhook + verify)', async () => {
+      txDoc.stockState = 'RESERVED';
+
+      await (service as any).finalizeSuccessfulTransaction(TX_ID);
+
+      expect(txModelMock.findOneAndUpdate).not.toHaveBeenCalled();
+      expect(raffles.incrementStats).toHaveBeenCalledTimes(1);
+      expect(raffles.incrementStats).toHaveBeenCalledWith(RAFFLE_ID, 0, 1);
+    });
+
+    it('releases the claim and issues no ticket when the raffle is sold out', async () => {
+      raffles.incrementStats.mockRejectedValueOnce(
+        new Error('Raffle is closed or has no tickets left'),
+      );
+
+      await expect(
+        (service as any).finalizeSuccessfulTransaction(TX_ID),
+      ).rejects.toThrow('no tickets left');
+
+      expect(session.withTransaction).not.toHaveBeenCalled();
+      expect(tickets.createMany).not.toHaveBeenCalled();
+      expect(txDoc.stockState).toBeUndefined();
+    });
+  });
+
+  describe('Digikuntz direct charge', () => {
+    it('rejects a payment method that does not match the phone operator before calling the provider', async () => {
+      Object.assign(service as any, {
+        rafflesService: {
+          adminGetById: jest.fn().mockResolvedValue({
+            status: 'LIVE',
+            ticketPrice: 500,
+            currency: 'XAF',
+            totalTickets: 0,
+            ticketsSold: 0,
+          }),
+        },
+        usersService: {
+          findById: jest.fn().mockResolvedValue({
+            email: 'u@example.com',
+            firstName: 'A',
+            lastName: 'B',
+          }),
+        },
+      });
+
+      await expect(
+        service.createIntent('665f1a2b3c4d5e6f7a8b9c0e', {
+          raffleId: '665f1a2b3c4d5e6f7a8b9c0f',
+          amount: 500,
+          provider: 'DIGIKUNTZ',
+          userPhone: '677123456', // numero MTN
+          paymentMethodCode: 'ORANGE',
+        } as any),
+      ).rejects.toThrow(/numéro MTN Mobile Money/);
+
+      expect(digikuntzMock.createDirectCharge).not.toHaveBeenCalled();
+      expect(txModelMock.create).not.toHaveBeenCalled();
+    });
+
+    it('returns the hosted checkout link created after a refused direct charge', async () => {
+      const link = 'https://checkout.flutterwave.com/v3/hosted/pay/flwlnk-XXXX';
+      const tx = {
+        _id: { toString: () => '665f1a2b3c4d5e6f7a8b9c0d' },
+        userId: { toString: () => 'user-id' },
+        provider: 'DIGIKUNTZ',
+        providerTransactionId: '6af3b037d39740d6da4a0ce4',
+        status: 'PENDING',
+        paymentFlow: 'DIRECT_CHARGE',
+        expiresAt: new Date(Date.now() + 5 * 60_000),
+        save: jest.fn().mockResolvedValue(undefined),
+      } as any;
+      txModelMock.findById.mockReturnValue({
+        exec: jest.fn().mockResolvedValue(tx),
+      });
+      // Reponse documentee "responseWhenRefused" (deja normalisee par le provider)
+      digikuntzMock.getTransaction.mockResolvedValue({
+        id: '6af3b037d39740d6da4a0ce4',
+        status: 'payin_pending',
+        paymentLink: link,
+        data: {
+          chargeStatus: 'failed',
+          fallback: { from: 'direct', reason: 'DIRECT_CHARGE_REFUSED' },
+        },
+      });
+
+      const result = await service.digikuntzVerify('user-id', {
+        transactionId: '665f1a2b3c4d5e6f7a8b9c0d',
+      } as any);
+
+      expect(result).toMatchObject({
+        status: 'PENDING',
+        paymentFlow: 'HOSTED_CHECKOUT',
+        paymentLink: link,
+      });
+      expect(tx.paymentLink).toBe(link);
+      expect(tx.save).toHaveBeenCalled();
+    });
+  });
 });
