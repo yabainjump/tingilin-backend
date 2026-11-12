@@ -7,10 +7,12 @@ services:
     # (multi-instances derriere le reverse proxy).
     env_file:
       - .env
+    environment:
+      UPLOADS_DIR: /app/uploads
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      - ./uploads:/app/uploads
+      - ${UPLOADS_HOST_DIR:-./uploads}:/app/uploads
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/ready').then((res) => { if (!res.ok) process.exit(1); }).catch(() => process.exit(1));"]

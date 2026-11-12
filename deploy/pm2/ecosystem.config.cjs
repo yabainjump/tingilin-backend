@@ -1,8 +1,13 @@
 // Multi-instance SUPPORTE uniquement si REDIS_URL est configure dans .env
 // (adapter Socket.IO + compteur de viewers + verrou de broadcast + throttling
 // partages via Redis). Sans REDIS_URL: garder PM2_INSTANCES=1.
+const path = require('node:path');
+
 const instances = Number(process.env.PM2_INSTANCES || 1);
 const basePort = Number(process.env.APP_PORT || 3001);
+const defaultUploadsDir = process.env.HOME
+  ? path.join(process.env.HOME, 'apps', 'Tinguilin-Data')
+  : path.join(process.cwd(), 'uploads');
 
 module.exports = {
   apps: [
@@ -34,6 +39,7 @@ module.exports = {
           process.env.HTTP_HEADERS_TIMEOUT_MS || '66000',
         HTTP_REQUEST_TIMEOUT_MS:
           process.env.HTTP_REQUEST_TIMEOUT_MS || '120000',
+        UPLOADS_DIR: process.env.UPLOADS_DIR || defaultUploadsDir,
       },
     },
   ],

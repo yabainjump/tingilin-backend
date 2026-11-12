@@ -4,7 +4,8 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { json, static as expressStatic, urlencoded } from 'express';
 import { mkdirSync } from 'fs';
-import { join } from 'path';
+import { resolve } from 'path';
+import { resolveUploadsRoot } from './common/uploads/uploads-root';
 
 type RawBodyCarrier = {
   rawBody?: Buffer;
@@ -131,11 +132,10 @@ async function bootstrap() {
     next();
   });
 
-  const uploadsDir = join(process.cwd(), 'uploads');
+  const uploadsDir = resolveUploadsRoot();
   mkdirSync(uploadsDir, { recursive: true });
-  app.use(
-    '/uploads',
-    expressStatic(uploadsDir, {
+  const uploadsStatic = (directory: string) =>
+    expressStatic(directory, {
       immutable: true,
       maxAge: uploadsCacheMaxAge,
       setHeaders: (res) => {
@@ -147,8 +147,16 @@ async function bootstrap() {
         res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
         res.setHeader('Access-Control-Allow-Origin', '*');
       },
-    }),
-  );
+    });
+  app.use('/uploads', uploadsStatic(uploadsDir));
+
+  // Compatibility during the one-time migration to external storage. New
+  // media is always written to UPLOADS_DIR; a missing historical file can
+  // still be read from the former workspace folder until it is copied.
+  const legacyUploadsDir = resolve(process.cwd(), 'uploads');
+  if (legacyUploadsDir !== uploadsDir) {
+    app.use('/uploads', uploadsStatic(legacyUploadsDir));
+  }
 
   const normalizeOrigin = (origin: string) =>
     origin.trim().replace(/\/+$/, '').toLowerCase();

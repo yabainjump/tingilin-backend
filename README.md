@@ -118,6 +118,21 @@ doit être atomique. Atlas fournit nativement cette capacité en production.
 npm run start:dev
 ```
 
+## Stockage persistant des images
+
+`UPLOADS_DIR` définit le dossier absolu utilisé pour les avatars et les images
+produits. Sans cette variable, le développement local utilise encore
+`<repo>/uploads`. Le déploiement PM2 configure automatiquement :
+
+```text
+$HOME/apps/Tinguilin-Data
+```
+
+Les URLs publiques restent `/uploads/...`; seule leur destination physique
+change. Le script `server-scripts/deploy-tinguilin-backend.sh` crée les
+sous-dossiers `products` et `avatars`, applique des permissions `750` et copie
+les anciens médias depuis `$APP_DIR/uploads` avant le redémarrage.
+
 ## Build et tests
 
 ```powershell

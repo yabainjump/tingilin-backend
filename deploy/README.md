@@ -76,6 +76,7 @@ TRUST_PROXY=1
 HTTP_KEEP_ALIVE_TIMEOUT_MS=65000
 HTTP_HEADERS_TIMEOUT_MS=66000
 HTTP_REQUEST_TIMEOUT_MS=120000
+UPLOADS_DIR=/home/<cpanel-user>/apps/Tinguilin-Data
 
 # CORS: all frontends that call the API
 CORS_ORIGINS=https://tinguilin.yaba-in.com,https://admin.tinguilin.yaba-in.com,https://app.digikuntz.com

@@ -17,6 +17,13 @@ REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 PM2_APP_NAME="${PM2_APP_NAME:-tingilin-api}"
 APP_PORT="${APP_PORT:-3001}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${APP_PORT}/health/ready}"
+DATA_DIR="${DATA_DIR:-$HOME/apps/Tinguilin-Data}"
+export UPLOADS_DIR="${UPLOADS_DIR:-$DATA_DIR}"
+
+case "$UPLOADS_DIR" in
+  /*) ;;
+  *) echo "ERREUR: UPLOADS_DIR doit etre un chemin absolu"; exit 1 ;;
+esac
 
 # --- Localisation de Node/npm/pm2 (cPanel EA-Nodejs) ----------------------------
 if [ -z "${NODE_BIN:-}" ]; then
@@ -31,9 +38,15 @@ NPM="${NPM:-$NODE_BIN/npm}"
 PM2="${PM2:-$NODE_BIN/pm2}"
 command -v "$PM2" >/dev/null 2>&1 || PM2="$NPM exec --yes pm2 --"
 
-echo "==> Backend deploy | repo=$REPO_DIR | branch=$BRANCH | node=$("$NODE_BIN/node" -v)"
+echo "==> Backend deploy | repo=$REPO_DIR | data=$UPLOADS_DIR | branch=$BRANCH | node=$("$NODE_BIN/node" -v)"
 cd "$REPO_DIR"
 mkdir -p logs "$HOME/env-backups"
+mkdir -p "$UPLOADS_DIR/products" "$UPLOADS_DIR/avatars"
+chmod 750 "$UPLOADS_DIR" "$UPLOADS_DIR/products" "$UPLOADS_DIR/avatars"
+
+if [ -d "$REPO_DIR/uploads" ]; then
+  cp -a "$REPO_DIR/uploads/." "$UPLOADS_DIR/"
+fi
 
 # --- Sauvegarde du .env (jamais ecrase par git) --------------------------------
 [ -f .env ] && cp .env "$HOME/env-backups/backend-env-$(date +%F-%H%M%S)" || true

@@ -4,6 +4,7 @@ import { unlink } from 'fs/promises';
 import { isAbsolute, join, relative, resolve } from 'path';
 import * as crypto from 'crypto';
 import sharp from 'sharp';
+import { resolveUploadsRoot } from './uploads-root';
 
 type StoredImageKind = 'avatars' | 'products';
 type ResizeFit = 'cover' | 'contain' | 'inside';
@@ -68,7 +69,7 @@ export async function storeOptimizedImageFromBuffer(input: {
     throw new BadRequestException('Invalid image file');
   }
 
-  const uploadsDir = join(process.cwd(), 'uploads', input.kind);
+  const uploadsDir = join(resolveUploadsRoot(), input.kind);
   mkdirSync(uploadsDir, { recursive: true });
 
   const safePrefix = String(input.prefix ?? input.kind)
@@ -137,8 +138,9 @@ export async function removeStoredImage(
   const expectedPrefix = `/uploads/${kind}/`;
   if (!normalized.startsWith(expectedPrefix)) return false;
 
-  const root = resolve(process.cwd(), 'uploads', kind);
-  const target = resolve(process.cwd(), normalized.replace(/^\/+/, ''));
+  const root = resolve(resolveUploadsRoot(), kind);
+  const filename = normalized.slice(expectedPrefix.length);
+  const target = resolve(root, filename);
   const relativeTarget = relative(root, target);
   if (
     !relativeTarget ||
