@@ -1,3 +1,4 @@
+import { ForbiddenException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getConnectionToken, getModelToken } from '@nestjs/mongoose';
 import { PaymentsService } from './payments.service';
@@ -8,6 +9,7 @@ import { ParticipationsService } from '../participations/participations.service'
 import { DigikuntzPaymentsService } from './providers/digikuntz-payments.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UsersService } from '../users/users.service';
+import { LiveActivityService } from '../raffles/live-activity.service';
 import { LedgerEntry } from './schemas/ledger-entry.schema';
 import { ConfigService } from '@nestjs/config';
 
@@ -70,6 +72,10 @@ describe('PaymentsService', () => {
           useValue: { createOnce: jest.fn().mockResolvedValue(undefined) },
         },
         { provide: UsersService, useValue: {} },
+        {
+          provide: LiveActivityService,
+          useValue: { announcePurchase: jest.fn() },
+        },
         { provide: ConfigService, useValue: configService },
         {
           provide: getConnectionToken(),
@@ -499,6 +505,73 @@ describe('PaymentsService', () => {
 
       expect(digikuntzMock.createDirectCharge).not.toHaveBeenCalled();
       expect(txModelMock.create).not.toHaveBeenCalled();
+    });
+
+    it('checks 18+ and the spending limit before creating anything or calling the provider', async () => {
+      const refusal = new ForbiddenException({ code: 'SPENDING_LIMIT_REACHED' });
+      const assertCanSpend = jest.fn().mockRejectedValue(refusal);
+      Object.assign(service as any, {
+        rafflesService: {
+          adminGetById: jest.fn().mockResolvedValue({
+            status: 'LIVE',
+            ticketPrice: 500,
+            currency: 'XAF',
+            totalTickets: 0,
+            ticketsSold: 0,
+          }),
+        },
+        usersService: {
+          findById: jest.fn().mockResolvedValue({
+            email: 'u@example.com',
+            firstName: 'A',
+            lastName: 'B',
+          }),
+          assertCanSpend,
+        },
+      });
+
+      await expect(
+        service.createIntent('665f1a2b3c4d5e6f7a8b9c0e', {
+          raffleId: '665f1a2b3c4d5e6f7a8b9c0f',
+          amount: 1500,
+          provider: 'DIGIKUNTZ',
+          userPhone: '677123456',
+          paymentMethodCode: 'MTN',
+        } as any),
+      ).rejects.toBe(refusal);
+
+      expect(assertCanSpend).toHaveBeenCalledWith('665f1a2b3c4d5e6f7a8b9c0e', 1500);
+      expect(txModelMock.create).not.toHaveBeenCalled();
+      expect(digikuntzMock.createDirectCharge).not.toHaveBeenCalled();
+    });
+
+    it('refuses a free ticket to an unconfirmed adult before reserving stock', async () => {
+      const incrementStats = jest.fn();
+      Object.assign(service as any, {
+        rafflesService: {
+          adminGetById: jest.fn().mockResolvedValue({
+            status: 'LIVE',
+            ticketPrice: 500,
+            currency: 'XAF',
+            totalTickets: 0,
+            ticketsSold: 0,
+          }),
+          incrementStats,
+        },
+        usersService: {
+          findById: jest.fn().mockResolvedValue({ adultConfirmedAt: null }),
+          assertAdultConfirmed: jest.fn(() => {
+            throw new ForbiddenException({ code: 'AGE_CONFIRMATION_REQUIRED' });
+          }),
+        },
+      });
+
+      await expect(
+        service.useFreeTicket('665f1a2b3c4d5e6f7a8b9c0e', {
+          raffleId: '665f1a2b3c4d5e6f7a8b9c0f',
+        } as any),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(incrementStats).not.toHaveBeenCalled();
     });
 
     it('returns the hosted checkout link created after a refused direct charge', async () => {

@@ -2,9 +2,13 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
   Logger,
   Patch,
+  Post,
+  Put,
   Query,
   Req,
   UploadedFile,
@@ -14,6 +18,7 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UsersService } from './users.service';
 import { UpdateMeDto } from './dto/update-me.dto';
+import { ConfirmAdultDto, SetSpendingLimitDto } from './dto/spending-limit.dto';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { memoryStorage } from 'multer';
@@ -108,6 +113,45 @@ export class UsersController {
       },
     );
     return this.usersService.toPublic(replacement.user);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('me/confirm-adult')
+  @HttpCode(200)
+  confirmAdult(@Req() req: any, @Body() dto: ConfirmAdultDto) {
+    // Le DTO impose deja confirm === true; double garde si le pipe change.
+    if (dto?.confirm !== true) {
+      throw new BadRequestException('Confirmation requise');
+    }
+    return this.usersService.confirmAdult(req.user.sub);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('me/spending-limit')
+  spendingLimit(@Req() req: any) {
+    return this.usersService.getSpendingLimitStatus(req.user.sub);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Put('me/spending-limit')
+  setSpendingLimit(@Req() req: any, @Body() dto: SetSpendingLimitDto) {
+    return this.usersService.setSpendingLimit(req.user.sub, {
+      period: dto.period,
+      amount: dto.amount,
+    });
+  }
+
+  // Supprimer la limite = assouplissement: applique apres le delai de reflexion.
+  @UseGuards(JwtAuthGuard)
+  @Delete('me/spending-limit')
+  removeSpendingLimit(@Req() req: any) {
+    return this.usersService.setSpendingLimit(req.user.sub, null);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('me/spending-limit/pending')
+  cancelPendingSpendingLimit(@Req() req: any) {
+    return this.usersService.cancelPendingSpendingLimit(req.user.sub);
   }
 
   @UseGuards(JwtAuthGuard)

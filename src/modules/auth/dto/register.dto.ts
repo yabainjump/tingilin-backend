@@ -1,4 +1,5 @@
 import {
+  Equals,
   IsEmail,
   IsNotEmpty,
   IsString,
@@ -56,4 +57,8 @@ export class RegisterDto {
   @IsOptional()
   @IsIn(CAMEROON_REGIONS as unknown as string[])
   region?: string;
+
+  // Le joueur doit declarer avoir 18 ans ou plus pour creer un compte.
+  @Equals(true, { message: 'Tu dois avoir 18 ans ou plus pour t’inscrire.' })
+  isAdult!: boolean;
 }

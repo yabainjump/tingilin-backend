@@ -11,6 +11,7 @@ import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { ClientSession, Connection, Model, Types } from 'mongoose';
 import * as crypto from 'crypto';
 import { RafflesService } from '../raffles/raffles.service';
+import { LiveActivityService } from '../raffles/live-activity.service';
 import { TicketsService } from '../tickets/tickets.service';
 import { CreateIntentDto } from './dto/create-intent.dto';
 import { MockConfirmDto } from './dto/mock-confirm.dto';
@@ -75,6 +76,7 @@ export class PaymentsService {
     private readonly digikuntz: DigikuntzPaymentsService,
     private readonly notifications: NotificationsService,
     private readonly usersService: UsersService,
+    private readonly liveActivity: LiveActivityService,
     private readonly config: ConfigService,
     @InjectConnection() private readonly connection: Connection,
   ) {}
@@ -1068,6 +1070,11 @@ export class PaymentsService {
         });
     }
     await this.usersService.evaluateMilestones(done.userId.toString());
+    this.liveActivity.announcePurchase({
+      raffleId: done.raffleId.toString(),
+      userId: done.userId.toString(),
+      quantity: done.quantity,
+    });
     return done;
   }
 
@@ -1201,6 +1208,11 @@ export class PaymentsService {
         return this.buildIntentResponse(existing, unit, true);
       }
     }
+
+    // Jeu responsable, verifie apres le rejeu idempotent (un paiement deja
+    // engage reste consultable) et AVANT toute ecriture ou appel provider:
+    // 18+ confirme et respect de la limite de depense du joueur.
+    await this.usersService.assertCanSpend(userId, amount);
 
     const participation = await this.participationsService.getOrCreate(
       dto.raffleId,
@@ -2212,6 +2224,10 @@ export class PaymentsService {
   async useFreeTicket(userId: string, dto: CreateFreeTicketDto) {
     const raffle = await this.rafflesService.adminGetById(dto.raffleId);
     this.assertRafflePurchasable(raffle);
+    // Un ticket gratuit reste une participation a un jeu: 18+ obligatoire.
+    this.usersService.assertAdultConfirmed(
+      await this.usersService.findById(userId),
+    );
     // Stock reserve hors transaction (meme raison que finalizeSuccessfulTransaction:
     // le document tombola est le point chaud partage par tous les acheteurs).
     await this.rafflesService.incrementStats(dto.raffleId, 1, 0, undefined, true);
@@ -2280,6 +2296,11 @@ export class PaymentsService {
     }
 
     await this.usersService.evaluateMilestones(userId);
+    this.liveActivity.announcePurchase({
+      raffleId: dto.raffleId,
+      userId,
+      quantity: 1,
+    });
 
     await this.notifications.createOnce({
       userId,

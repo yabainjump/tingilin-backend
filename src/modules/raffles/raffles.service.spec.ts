@@ -368,4 +368,78 @@ describe('RafflesService', () => {
     expect(result?.winner?.userId).toEqual(winnerUserId);
     expect(notificationsMock.create).toHaveBeenCalled();
   });
+
+  describe('winner delivery proof (trust)', () => {
+    const raffleId = new Types.ObjectId().toString();
+    const chain = (value: unknown) => ({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue(value),
+    });
+
+    it('refuses to publish a proof before the prize is marked delivered', async () => {
+      raffleModelMock.findById.mockReturnValue(
+        chain({
+          _id: raffleId,
+          status: RaffleStatus.DRAWN,
+          winner: { fulfillmentStatus: 'IN_SHIPPING' },
+        }),
+      );
+      await expect(
+        service.adminSetDeliveryProof(raffleId, {
+          imageUrl: '/uploads/deliveries/delivery-x.webp',
+        }),
+      ).rejects.toThrow(/livré/);
+      expect(raffleModelMock.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('stores consent date, trims the testimonial and returns the old image for cleanup', async () => {
+      raffleModelMock.findById.mockReturnValue(
+        chain({
+          _id: raffleId,
+          status: RaffleStatus.DRAWN,
+          winner: { fulfillmentStatus: 'DELIVERED' },
+          deliveryProof: { imageUrl: '/uploads/deliveries/old.webp' },
+        }),
+      );
+      raffleModelMock.updateOne.mockReturnValue({
+        exec: jest.fn().mockResolvedValue({}),
+      });
+
+      const res = await service.adminSetDeliveryProof(raffleId, {
+        imageUrl: '/uploads/deliveries/new.webp',
+        testimonial: `  Merci   Tinguilin ! ${'x'.repeat(400)}`,
+      });
+
+      const saved = raffleModelMock.updateOne.mock.calls[0][1].$set.deliveryProof;
+      expect(saved.consentAt).toBeInstanceOf(Date);
+      expect(saved.testimonial.startsWith('Merci Tinguilin !')).toBe(true);
+      expect(saved.testimonial.length).toBeLessThanOrEqual(280);
+      expect(res.previousImageUrl).toBe('/uploads/deliveries/old.webp');
+      expect(res.deliveryProof?.imageUrl).toBe('/uploads/deliveries/new.webp');
+      expect(queryCacheMock.invalidatePrefix).toHaveBeenCalledWith('raffles:');
+    });
+
+    it('exposes trust stats as aggregates only', async () => {
+      raffleModelMock.aggregate.mockReturnValue({
+        exec: jest.fn().mockResolvedValue([
+          {
+            winners: 4,
+            delivered: 3,
+            withProof: 2,
+            verifiableDraws: 4,
+            prizesValueXaf: 2100000.4,
+          },
+        ]),
+      });
+      await expect(service.getTrustStats()).resolves.toEqual({
+        winners: 4,
+        prizesDelivered: 3,
+        deliveryProofs: 2,
+        verifiableDraws: 4,
+        prizesValueXaf: 2100000,
+        currency: 'XAF',
+      });
+    });
+  });
 });

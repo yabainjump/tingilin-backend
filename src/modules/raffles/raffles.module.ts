@@ -14,6 +14,7 @@ import { RafflesPublicService } from './raffles.public.service';
 import { RafflesScheduler } from './raffles.sheduler';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { RafflesLiveGateway } from './raffles.live.gateway';
+import { LiveActivityService } from './live-activity.service';
 import { AuditModule } from '../audit/audit.module';
 import {
   Transaction,
@@ -49,7 +50,8 @@ import {
     RafflesPublicService,
     RafflesScheduler,
     RafflesLiveGateway,
+    LiveActivityService,
   ],
-  exports: [RafflesService],
+  exports: [RafflesService, LiveActivityService],
 })
 export class RafflesModule {}

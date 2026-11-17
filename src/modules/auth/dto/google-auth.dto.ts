@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsIn,
   IsJWT,
   IsOptional,
@@ -20,4 +21,10 @@ export class GoogleAuthDto {
   @IsString()
   @MaxLength(16)
   referralCode?: string;
+
+  // Optionnel: un compte Google cree sans cette declaration devra confirmer
+  // ses 18 ans avant son premier achat.
+  @IsOptional()
+  @IsBoolean()
+  isAdult?: boolean;
 }

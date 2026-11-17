@@ -813,6 +813,7 @@ export class RafflesService {
                   productSubtitle: '$product.description',
                   productImageUrl: '$product.imageUrl',
                   prizeValue: { $ifNull: ['$product.realValue', 0] },
+                  deliveryProof: '$deliveryProof',
                   winnerUserId: {
                     $cond: [
                       { $ifNull: ['$winner.userId', false] },
@@ -940,6 +941,9 @@ export class RafflesService {
           raffleDate: row?.raffleDate ?? null,
           status: this.parseWinnerStatusInput(row?.status),
           prizeValue: Number(row?.prizeValue ?? 0),
+          deliveryProof: row?.deliveryProof
+            ? this.publicDeliveryProof(row.deliveryProof)
+            : null,
         };
       }),
       page,
@@ -1005,6 +1009,168 @@ export class RafflesService {
       status: nextStatus,
       fulfillmentUpdatedAt: raffle.winner.fulfillmentUpdatedAt,
     };
+  }
+
+  /**
+   * Publie la preuve de remise d'un lot. Exige un lot REELLEMENT livre
+   * (statut DELIVERED) et l'accord explicite du gagnant: on ne publie jamais
+   * la photo de quelqu'un sans son consentement.
+   * Retourne l'ancienne image pour que l'appelant la supprime du disque.
+   */
+  async adminSetDeliveryProof(
+    raffleId: string,
+    input: { imageUrl: string; testimonial?: string; actorUserId?: string },
+  ): Promise<{ deliveryProof: any; previousImageUrl: string | null }> {
+    this.ensureObjectId(raffleId, 'Invalid raffle id');
+    const raffle: any = await this.raffleModel
+      .findById(raffleId)
+      .select('status winner deliveryProof')
+      .exec();
+    if (!raffle) throw new NotFoundException('Raffle not found');
+    if (raffle.status !== RaffleStatus.DRAWN || !raffle.winner) {
+      throw new BadRequestException('Raffle has no published winner');
+    }
+    if (!this.isDelivered(raffle.winner)) {
+      throw new BadRequestException(
+        'Le lot doit être marqué "livré" avant de publier la preuve de remise',
+      );
+    }
+
+    const now = new Date();
+    const deliveryProof = {
+      imageUrl: input.imageUrl,
+      testimonial: String(input.testimonial ?? '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 280),
+      consentAt: now,
+      publishedAt: now,
+      publishedBy:
+        input.actorUserId && Types.ObjectId.isValid(input.actorUserId)
+          ? new Types.ObjectId(input.actorUserId)
+          : null,
+    };
+
+    const previousImageUrl = raffle.deliveryProof?.imageUrl
+      ? String(raffle.deliveryProof.imageUrl)
+      : null;
+    await this.raffleModel
+      .updateOne({ _id: raffle._id }, { $set: { deliveryProof } })
+      .exec();
+    await this.invalidatePublicRaffleCache();
+
+    return {
+      deliveryProof: this.publicDeliveryProof(deliveryProof),
+      previousImageUrl,
+    };
+  }
+
+  /** Retrait (ex: le gagnant retire son accord). */
+  async adminRemoveDeliveryProof(
+    raffleId: string,
+  ): Promise<{ previousImageUrl: string | null }> {
+    this.ensureObjectId(raffleId, 'Invalid raffle id');
+    const raffle: any = await this.raffleModel
+      .findOneAndUpdate(
+        { _id: raffleId },
+        { $set: { deliveryProof: null } },
+        { new: false },
+      )
+      .select('deliveryProof')
+      .lean()
+      .exec();
+    if (!raffle) throw new NotFoundException('Raffle not found');
+    await this.invalidatePublicRaffleCache();
+    return {
+      previousImageUrl: raffle.deliveryProof?.imageUrl
+        ? String(raffle.deliveryProof.imageUrl)
+        : null,
+    };
+  }
+
+  // Tolere un statut absent (anciens tirages) sans lever d'exception.
+  private isDelivered(winner: any): boolean {
+    const raw: unknown = winner?.fulfillmentStatus;
+    const status = typeof raw === 'string' ? raw.trim().toUpperCase() : '';
+    return status === String(WinnerFulfillmentStatus.DELIVERED);
+  }
+
+  private publicDeliveryProof(proof: any) {
+    const imageUrl = String(proof?.imageUrl ?? '').trim();
+    if (!imageUrl.startsWith('/uploads/deliveries/')) return null;
+    return {
+      imageUrl,
+      testimonial: String(proof?.testimonial ?? ''),
+      publishedAt: proof?.publishedAt ?? null,
+    };
+  }
+
+  /**
+   * Chiffres publics de confiance: tirages effectues, lots remis, valeur des
+   * lots gagnes. Agreges uniquement (aucune donnee personnelle).
+   */
+  async getTrustStats() {
+    return this.queryCache.remember('raffles:trust-stats', async () => {
+      const [row] = await this.raffleModel
+        .aggregate([
+          {
+            $match: {
+              status: RaffleStatus.DRAWN,
+              winner: { $ne: null },
+              'winner.isPublished': true,
+            },
+          },
+          {
+            $lookup: {
+              from: 'products',
+              localField: 'productId',
+              foreignField: '_id',
+              pipeline: [{ $project: { realValue: 1 } }],
+              as: 'product',
+            },
+          },
+          { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+          {
+            $group: {
+              _id: null,
+              winners: { $sum: 1 },
+              delivered: {
+                $sum: {
+                  $cond: [
+                    {
+                      $eq: [
+                        '$winner.fulfillmentStatus',
+                        WinnerFulfillmentStatus.DELIVERED,
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              withProof: {
+                $sum: { $cond: [{ $ifNull: ['$deliveryProof.imageUrl', false] }, 1, 0] },
+              },
+              verifiableDraws: {
+                $sum: {
+                  $cond: [{ $eq: ['$provablyFair.committedBeforeDraw', true] }, 1, 0],
+                },
+              },
+              prizesValueXaf: { $sum: { $ifNull: ['$product.realValue', 0] } },
+            },
+          },
+        ])
+        .exec();
+
+      return {
+        winners: Number(row?.winners ?? 0),
+        prizesDelivered: Number(row?.delivered ?? 0),
+        deliveryProofs: Number(row?.withProof ?? 0),
+        verifiableDraws: Number(row?.verifiableDraws ?? 0),
+        prizesValueXaf: Math.max(0, Math.round(Number(row?.prizesValueXaf ?? 0))),
+        currency: 'XAF',
+      };
+    });
   }
 
   async adminExportWinnersCsv(params?: {
@@ -1846,6 +2012,7 @@ export class RafflesService {
             $project: {
               productId: 1,
               winner: 1,
+              deliveryProof: 1,
             },
           },
           {
@@ -1926,6 +2093,10 @@ export class RafflesService {
           ticketSerial,
           ticketCode: this.toTicketCode(ticketSerial),
           badgeTone,
+          delivered: this.isDelivered(row.winner),
+          deliveryProof: row.deliveryProof
+            ? this.publicDeliveryProof(row.deliveryProof)
+            : null,
         };
       });
 

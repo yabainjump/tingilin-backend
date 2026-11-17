@@ -6,7 +6,7 @@ import * as crypto from 'crypto';
 import sharp from 'sharp';
 import { resolveUploadsRoot } from './uploads-root';
 
-type StoredImageKind = 'avatars' | 'products';
+type StoredImageKind = 'avatars' | 'products' | 'deliveries';
 type ResizeFit = 'cover' | 'contain' | 'inside';
 
 const ALLOWED_MIME_TYPES = new Set([

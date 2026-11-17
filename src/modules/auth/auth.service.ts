@@ -93,6 +93,7 @@ export class AuthService {
       region: dto.region ?? null,
       referredBy,
       role: roleForNewUser,
+      adultConfirmed: dto.isAdult === true,
     });
 
     return this.issueTokens(user);
@@ -107,6 +108,7 @@ export class AuthService {
     idToken: string;
     region?: string;
     referralCode?: string;
+    isAdult?: boolean;
   }) {
     const profile = await this.verifyGoogleIdToken(dto.idToken);
 
@@ -153,6 +155,7 @@ export class AuthService {
         region: dto.region ?? null,
         referredBy,
         role: undefined,
+        adultConfirmed: dto.isAdult === true,
       });
     } else if (String(user.status ?? 'ACTIVE').toUpperCase() !== 'ACTIVE') {
       throw new UnauthorizedException('Account suspended');

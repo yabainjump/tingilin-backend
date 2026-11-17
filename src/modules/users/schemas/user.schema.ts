@@ -1,12 +1,28 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 import { CAMEROON_REGIONS } from '../../../common/regions';
+import { SPENDING_PERIODS, SpendingPeriod } from '../spending-limit';
 
 export type UserDocument = HydratedDocument<User>;
 
 export type UserRole = 'USER' | 'ADMIN' | 'MODERATOR';
 export type UserStatus = 'ACTIVE' | 'SUSPENDED';
-export type RewardHistorySource = 'REFERRAL' | 'LOYALTY';
+// WELCOME = bonus du filleul a son premier achat payant.
+export type RewardHistorySource = 'REFERRAL' | 'LOYALTY' | 'WELCOME';
+
+export class StoredSpendingLimit {
+  period!: SpendingPeriod;
+  amount!: number;
+  setAt!: Date;
+}
+
+export class StoredPendingSpendingLimit {
+  period?: SpendingPeriod | null;
+  amount?: number | null;
+  remove!: boolean;
+  requestedAt!: Date;
+  effectiveAt!: Date;
+}
 
 export class RewardHistoryItem {
   source!: RewardHistorySource;
@@ -76,7 +92,7 @@ export class User {
       {
         source: {
           type: String,
-          enum: ['REFERRAL', 'LOYALTY'],
+          enum: ['REFERRAL', 'LOYALTY', 'WELCOME'],
           required: true,
         },
         amount: { type: Number, required: true, default: 1 },
@@ -88,6 +104,43 @@ export class User {
     default: [],
   })
   rewardHistory!: RewardHistoryItem[];
+
+  // Date a laquelle le joueur a declare avoir 18 ans ou plus. null = jamais
+  // confirme (comptes anterieurs, comptes Google): l'achat est alors refuse
+  // tant qu'il n'a pas confirme.
+  @Prop({ type: Date, default: null })
+  adultConfirmedAt?: Date | null;
+
+  // Le joueur apparait-il dans le fil "X vient de prendre N tickets" ?
+  // Seuls prenom + initiale + region sont diffuses; le joueur peut refuser.
+  @Prop({ type: Boolean, default: true })
+  showInLiveFeed!: boolean;
+
+  // Limite de depense choisie par le joueur (fenetre glissante).
+  @Prop({
+    type: {
+      period: { type: String, enum: SPENDING_PERIODS },
+      amount: { type: Number, min: 0 },
+      setAt: { type: Date },
+    },
+    default: null,
+    _id: false,
+  })
+  spendingLimit?: StoredSpendingLimit | null;
+
+  // Assouplissement demande, applique seulement a effectiveAt.
+  @Prop({
+    type: {
+      period: { type: String, enum: [...SPENDING_PERIODS, null] },
+      amount: { type: Number, min: 0 },
+      remove: { type: Boolean, default: false },
+      requestedAt: { type: Date },
+      effectiveAt: { type: Date },
+    },
+    default: null,
+    _id: false,
+  })
+  pendingSpendingLimit?: StoredPendingSpendingLimit | null;
 
   @Prop({ default: '/assets/img/profile.svg' })
   avatar!: string;

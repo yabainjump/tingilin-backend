@@ -74,6 +74,13 @@ export class RafflesController {
     return this.rafflesService.getPublicDetails(id);
   }
 
+  // GET /api/v1/raffles/trust-stats : lots remis, valeur des lots, tirages
+  // verifiables. Declare avant les routes ":id" (ordre d'enregistrement).
+  @Get('trust-stats')
+  trustStats() {
+    return this.rafflesService.getTrustStats();
+  }
+
   @Get('winners')
   async winners(@Query('limit') limit?: string) {
     const n = Math.min(Math.max(parseInt(limit ?? '20', 10) || 20, 1), 100);

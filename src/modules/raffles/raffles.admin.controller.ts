@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -9,10 +10,19 @@ import {
   Post,
   Query,
   Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
+import { memoryStorage } from 'multer';
+import {
+  removeStoredImage,
+  storeOptimizedImageFromBuffer,
+} from '../../common/uploads/image-storage';
+import { DeliveryProofDto } from './dto/delivery-proof.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { AuditService } from '../audit/audit.service';
@@ -96,6 +106,116 @@ export class RafflesAdminController {
       });
       throw error;
     }
+  }
+
+  @Post('winners/:id/delivery-proof')
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+        consent: { type: 'string', enum: ['true'] },
+        testimonial: { type: 'string', maxLength: 280 },
+      },
+      required: ['file', 'consent'],
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 6 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        const mime = String(file.mimetype ?? '').toLowerCase();
+        if (!mime.startsWith('image/')) {
+          cb(new BadRequestException('Only image files are allowed'), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  async setDeliveryProof(
+    @Param('id') id: string,
+    @Body() dto: DeliveryProofDto,
+    @UploadedFile() file: any,
+    @Req() req: any,
+  ) {
+    let imageUrl: string | null = null;
+    try {
+      if (!file) throw new BadRequestException('Photo de remise obligatoire');
+      // L'image est decodee puis re-encodee (webp) avec un nom aleatoire.
+      imageUrl = await storeOptimizedImageFromBuffer({
+        buffer: file.buffer,
+        mimeType: file.mimetype,
+        kind: 'deliveries',
+        prefix: 'delivery',
+        maxWidth: 1400,
+        maxHeight: 1400,
+        fit: 'inside',
+        quality: 80,
+      });
+      const result = await this.rafflesService.adminSetDeliveryProof(id, {
+        imageUrl,
+        testimonial: dto.testimonial,
+        actorUserId: req.user?.sub,
+      });
+      if (result.previousImageUrl && result.previousImageUrl !== imageUrl) {
+        await removeStoredImage(result.previousImageUrl, 'deliveries').catch(
+          () => false,
+        );
+      }
+      await this.auditService.safeLog({
+        action: 'ADMIN_WINNER_DELIVERY_PROOF_PUBLISHED',
+        actorUserId: req.user?.sub,
+        actorEmail: req.user?.email,
+        actorRole: req.user?.role,
+        targetType: 'RAFFLE',
+        targetId: id,
+        metadata: { consent: true, hasTestimonial: Boolean(dto.testimonial) },
+        ip: req.ip,
+        userAgent: req.headers?.['user-agent'],
+      });
+      return { ok: true, deliveryProof: result.deliveryProof };
+    } catch (error: any) {
+      if (imageUrl) {
+        await removeStoredImage(imageUrl, 'deliveries').catch(() => false);
+      }
+      await this.auditService.safeLog({
+        action: 'ADMIN_WINNER_DELIVERY_PROOF_PUBLISHED',
+        actorUserId: req.user?.sub,
+        actorEmail: req.user?.email,
+        actorRole: req.user?.role,
+        targetType: 'RAFFLE',
+        targetId: id,
+        status: 'FAILED',
+        metadata: { error: error?.message ?? 'UNKNOWN' },
+        ip: req.ip,
+        userAgent: req.headers?.['user-agent'],
+      });
+      throw error;
+    }
+  }
+
+  @Delete('winners/:id/delivery-proof')
+  async removeDeliveryProof(@Param('id') id: string, @Req() req: any) {
+    const result = await this.rafflesService.adminRemoveDeliveryProof(id);
+    if (result.previousImageUrl) {
+      await removeStoredImage(result.previousImageUrl, 'deliveries').catch(
+        () => false,
+      );
+    }
+    await this.auditService.safeLog({
+      action: 'ADMIN_WINNER_DELIVERY_PROOF_REMOVED',
+      actorUserId: req.user?.sub,
+      actorEmail: req.user?.email,
+      actorRole: req.user?.role,
+      targetType: 'RAFFLE',
+      targetId: id,
+      ip: req.ip,
+      userAgent: req.headers?.['user-agent'],
+    });
+    return { ok: true };
   }
 
   @Get('winners/export.csv')

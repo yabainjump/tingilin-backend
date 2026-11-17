@@ -14,6 +14,7 @@ import { ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { ShareModule } from './modules/share/share.module';
+import { PollsModule } from './modules/polls/polls.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AuditModule } from './modules/audit/audit.module';
@@ -136,6 +137,7 @@ if (customDnsServers.length > 0) {
     TicketsModule,
     NotificationsModule,
     ShareModule,
+    PollsModule,
     PaymentsModule,
     ParticipationsModule,
     ScheduleModule.forRoot(),

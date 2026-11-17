@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -30,10 +31,26 @@ import {
   buildPhoneLookupCandidates,
   normalizeStoredPhone,
 } from '../../common/utils/phone.util';
+import {
+  formatXaf,
+  isStricterOrEqual,
+  normalizePendingSpendingLimit,
+  normalizeSpendingLimit,
+  SPENDING_LIMIT_LOOSEN_DELAY_MS,
+  SPENDING_PERIOD_LABELS,
+  SPENDING_PERIOD_MS,
+  SpendingLimitValue,
+} from './spending-limit';
 
 type HistoryResult = 'WON' | 'LOST' | 'NONE';
-const REFERRAL_TARGET = 10;
-const LOYALTY_TARGET = 10;
+// 1 ticket gratuit au parrain tous les 5 filleuls qui ont joue (achat payant).
+export const REFERRAL_TARGET = 5;
+export const LOYALTY_TARGET = 10;
+// Ticket(s) offert(s) au filleul lui-meme a son premier achat payant.
+export const REFEREE_WELCOME_TICKETS = 1;
+
+export const AGE_CONFIRMATION_REQUIRED = 'AGE_CONFIRMATION_REQUIRED';
+export const SPENDING_LIMIT_REACHED = 'SPENDING_LIMIT_REACHED';
 const DEFAULT_AVATAR_PATH = '/assets/img/profile.svg';
 
 @Injectable()
@@ -99,6 +116,8 @@ export class UsersService {
       avatar: this.normalizeAvatar(user.avatar),
       referralCode: user.referralCode,
       freeTicketsBalance: Number(user.freeTicketsBalance ?? 0),
+      adultConfirmed: Boolean(user.adultConfirmedAt),
+      showInLiveFeed: user.showInLiveFeed !== false,
     };
   }
 
@@ -112,6 +131,9 @@ export class UsersService {
     if (dto.lastName !== undefined) $set.lastName = dto.lastName.trim();
     if (dto.phone !== undefined) $set.phone = normalizeStoredPhone(dto.phone);
     if (dto.region !== undefined) $set.region = dto.region;
+    if (dto.showInLiveFeed !== undefined) {
+      $set.showInLiveFeed = dto.showInLiveFeed === true;
+    }
 
     const updated = await this.userModel
       .findByIdAndUpdate(id, { $set }, { new: true })
@@ -153,6 +175,7 @@ export class UsersService {
     avatar?: string;
     region?: string | null;
     referredBy?: string | null;
+    adultConfirmed?: boolean;
   }) {
     const email = params.email.trim().toLowerCase();
     const username = String(params.username ?? '')
@@ -181,6 +204,7 @@ export class UsersService {
           params.referredBy && Types.ObjectId.isValid(params.referredBy)
             ? new Types.ObjectId(params.referredBy)
             : null,
+        adultConfirmedAt: params.adultConfirmed === true ? new Date() : null,
       });
     } catch (error: any) {
       const code = Number(error?.code ?? 0);
@@ -640,19 +664,52 @@ export class UsersService {
         .exec();
     }
 
-    // Qualifie le filleul apres son premier achat payant (atomique).
+    // Qualifie le filleul apres son premier achat payant et lui offre son
+    // bonus de bienvenue DANS LA MEME mise a jour atomique: le filtre
+    // referralQualified != true garantit un seul credit, meme si deux
+    // paiements sont finalises en meme temps.
     if (user.referredBy && !user.referralQualified && hasPurchasedAtLeastOnce) {
-      await this.userModel
+      const qualifiedAt = new Date();
+      const qualification = await this.userModel
         .updateOne(
           { _id: uid, referralQualified: { $ne: true } },
           {
             $set: {
               referralQualified: true,
-              referralQualifiedAt: new Date(),
+              referralQualifiedAt: qualifiedAt,
+            },
+            $inc: { freeTicketsBalance: REFEREE_WELCOME_TICKETS },
+            $push: {
+              rewardHistory: {
+                $each: [
+                  {
+                    source: 'WELCOME',
+                    amount: REFEREE_WELCOME_TICKETS,
+                    reason: 'Bonus de bienvenue parrainage (+1 ticket)',
+                    createdAt: qualifiedAt,
+                    metadata: { inviterId: String(user.referredBy) },
+                  },
+                ],
+                $slice: -100,
+              },
             },
           },
         )
         .exec();
+
+      if (Number((qualification as any)?.modifiedCount ?? 0) > 0) {
+        await this.notifications.create({
+          userId: String(user._id),
+          type: 'FREE_TICKET_AVAILABLE',
+          title: 'Bonus de bienvenue 🎁',
+          body: `Merci pour ton premier achat ! Tu reçois ${REFEREE_WELCOME_TICKETS} ticket gratuit grâce à ton parrain.`,
+          data: {
+            source: 'WELCOME',
+            amount: REFEREE_WELCOME_TICKETS,
+            deepLink: '/tabs/referral',
+          },
+        });
+      }
     }
 
     // Recompenses fidelite: attribution ATOMIQUE et idempotente.
@@ -800,6 +857,210 @@ export class UsersService {
     return updated;
   }
 
+  // ---------------------------------------------------------------------------
+  // Jeu responsable: confirmation 18+ et limite de depense
+  // ---------------------------------------------------------------------------
+
+  async confirmAdult(userId: string) {
+    const uid = this.toObjectId(userId);
+    // Premiere confirmation seulement: la date d'origine reste la preuve.
+    await this.userModel
+      .updateOne(
+        { _id: uid, $or: [{ adultConfirmedAt: null }, { adultConfirmedAt: { $exists: false } }] },
+        { $set: { adultConfirmedAt: new Date() } },
+      )
+      .exec();
+    return this.toPublic(await this.findById(userId));
+  }
+
+  /** Refuse toute participation tant que le joueur n'a pas confirme ses 18 ans. */
+  assertAdultConfirmed(user: { adultConfirmedAt?: Date | null }) {
+    if (!user?.adultConfirmedAt) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: AGE_CONFIRMATION_REQUIRED,
+        message:
+          'Tinguilin est réservé aux personnes de 18 ans ou plus. Confirme ton âge pour participer.',
+      });
+    }
+  }
+
+  /**
+   * Point de controle unique avant de creer une intention de paiement:
+   * 18+ confirme ET montant compatible avec la limite que le joueur s'est fixee.
+   */
+  async assertCanSpend(userId: string, amount: number) {
+    const user = await this.findById(userId);
+    this.assertAdultConfirmed(user);
+
+    const limit = await this.resolveSpendingLimit(user);
+    if (!limit) return;
+
+    const spent = await this.spentInWindow(user._id, limit.period);
+    const requested = Math.max(0, Math.floor(Number(amount) || 0));
+    if (spent + requested > limit.amount) {
+      const remaining = Math.max(0, limit.amount - spent);
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: SPENDING_LIMIT_REACHED,
+        message:
+          remaining > 0
+            ? `Ta limite est de ${formatXaf(limit.amount)} ${SPENDING_PERIOD_LABELS[limit.period]}. Il te reste ${formatXaf(remaining)}.`
+            : `Tu as atteint ta limite de ${formatXaf(limit.amount)} ${SPENDING_PERIOD_LABELS[limit.period]}. Reviens plus tard.`,
+        remaining,
+      });
+    }
+  }
+
+  async getSpendingLimitStatus(userId: string) {
+    const user = await this.findById(userId);
+    const limit = await this.resolveSpendingLimit(user);
+    const pending = normalizePendingSpendingLimit(
+      (await this.userModel.findById(user._id).select('pendingSpendingLimit').lean().exec())
+        ?.pendingSpendingLimit,
+    );
+
+    const spent = limit ? await this.spentInWindow(user._id, limit.period) : 0;
+    return {
+      limit,
+      spent,
+      remaining: limit ? Math.max(0, limit.amount - spent) : null,
+      pending: pending
+        ? {
+            limit: pending.next,
+            remove: pending.next === null,
+            effectiveAt: pending.effectiveAt,
+          }
+        : null,
+      loosenDelayHours: SPENDING_LIMIT_LOOSEN_DELAY_MS / 3_600_000,
+    };
+  }
+
+  /**
+   * Plus strict => immediat. Plus souple => applique dans 24 h (le joueur
+   * peut encore annuler cette demande d'ici la).
+   */
+  async setSpendingLimit(userId: string, next: SpendingLimitValue | null) {
+    const user = await this.findById(userId);
+    const current = await this.resolveSpendingLimit(user);
+    const now = new Date();
+
+    if (isStricterOrEqual(current, next)) {
+      await this.userModel
+        .updateOne(
+          { _id: user._id },
+          {
+            $set: {
+              spendingLimit: next ? { ...next, setAt: now } : null,
+              pendingSpendingLimit: null,
+            },
+          },
+        )
+        .exec();
+      return { applied: 'IMMEDIATE' as const, status: await this.getSpendingLimitStatus(userId) };
+    }
+
+    const effectiveAt = new Date(now.getTime() + SPENDING_LIMIT_LOOSEN_DELAY_MS);
+    await this.userModel
+      .updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            pendingSpendingLimit: {
+              period: next?.period ?? null,
+              amount: next?.amount ?? null,
+              remove: next === null,
+              requestedAt: now,
+              effectiveAt,
+            },
+          },
+        },
+      )
+      .exec();
+    return { applied: 'DELAYED' as const, status: await this.getSpendingLimitStatus(userId) };
+  }
+
+  async cancelPendingSpendingLimit(userId: string) {
+    const uid = this.toObjectId(userId);
+    await this.userModel
+      .updateOne({ _id: uid }, { $set: { pendingSpendingLimit: null } })
+      .exec();
+    return this.getSpendingLimitStatus(userId);
+  }
+
+  /** Limite en vigueur; applique au passage un assouplissement arrive a echeance. */
+  private async resolveSpendingLimit(
+    user: UserDocument,
+  ): Promise<SpendingLimitValue | null> {
+    const current = normalizeSpendingLimit(user.spendingLimit);
+    const pending = normalizePendingSpendingLimit(user.pendingSpendingLimit);
+    if (!pending || pending.effectiveAt.getTime() > Date.now()) return current;
+
+    // Filtre sur effectiveAt: une nouvelle demande arrivee entre-temps n'est
+    // pas ecrasee par cette application tardive.
+    await this.userModel
+      .updateOne(
+        { _id: user._id, 'pendingSpendingLimit.effectiveAt': pending.effectiveAt },
+        {
+          $set: {
+            spendingLimit: pending.next ? { ...pending.next, setAt: new Date() } : null,
+            pendingSpendingLimit: null,
+          },
+        },
+      )
+      .exec();
+    const refreshed = await this.userModel
+      .findById(user._id)
+      .select('spendingLimit')
+      .lean()
+      .exec();
+    return normalizeSpendingLimit(refreshed?.spendingLimit);
+  }
+
+  /**
+   * Montant engage sur la fenetre glissante: paiements reussis + paiements en
+   * attente non expires (sinon on contournerait la limite en lancant plusieurs
+   * paiements avant d'en valider un). Les tickets gratuits ne comptent pas.
+   */
+  private async spentInWindow(
+    userId: Types.ObjectId,
+    period: SpendingLimitValue['period'],
+  ): Promise<number> {
+    const now = new Date();
+    const since = new Date(now.getTime() - SPENDING_PERIOD_MS[period]);
+    const rows = await this.txModel
+      .aggregate([
+        {
+          $match: {
+            userId,
+            createdAt: { $gte: since },
+            provider: { $ne: 'FREE_TICKET' },
+            $or: [
+              { status: 'SUCCESS' },
+              {
+                status: 'PENDING',
+                $or: [
+                  { expiresAt: { $exists: false } },
+                  { expiresAt: null },
+                  { expiresAt: { $gt: now } },
+                ],
+              },
+            ],
+          },
+        },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ])
+      .exec();
+    return Math.max(0, Number(rows?.[0]?.total ?? 0));
+  }
+
+  private toObjectId(id: string): Types.ObjectId {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Invalid user id');
+    }
+    return new Types.ObjectId(id);
+  }
+
   async getReferralSummary(userId: string) {
     // Lecture pure: les recompenses sont attribuees a l'achat
     // (finalizeSuccessfulTransaction -> evaluateMilestones), jamais sur un GET.
@@ -878,6 +1139,8 @@ export class UsersService {
         target: REFERRAL_TARGET,
         progress: referralProgress,
         rewardsGranted: Number(user.referralRewardsGranted ?? 0),
+        // Ce que recoit le filleul a son premier achat (argument de partage).
+        refereeWelcomeTickets: REFEREE_WELCOME_TICKETS,
       },
       loyalty: {
         playedRafflesCount: loyaltyPlayedCount,

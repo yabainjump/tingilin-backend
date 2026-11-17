@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsIn,
   IsOptional,
   IsString,
@@ -29,4 +30,8 @@ export class UpdateMeDto {
   @IsOptional()
   @IsIn(CAMEROON_REGIONS as unknown as string[])
   region?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  showInLiveFeed?: boolean;
 }

@@ -39,6 +39,16 @@ export class ProvablyFairProof {
   serials?: string[];
 }
 
+// Preuve de remise du lot (photo + temoignage), publiee UNIQUEMENT avec
+// l'accord du gagnant (consentAt = date a laquelle l'admin l'a confirme).
+export class WinnerDeliveryProof {
+  imageUrl!: string;
+  testimonial?: string;
+  consentAt!: Date;
+  publishedAt!: Date;
+  publishedBy?: Types.ObjectId | null;
+}
+
 export type RaffleDocument = HydratedDocument<Raffle>;
 
 @Schema({ timestamps: true })
@@ -108,6 +118,19 @@ export class Raffle {
     _id: false,
   })
   winner?: RaffleWinner | null;
+
+  @Prop({
+    type: {
+      imageUrl: { type: String, required: true },
+      testimonial: { type: String, default: '' },
+      consentAt: { type: Date, required: true },
+      publishedAt: { type: Date, required: true },
+      publishedBy: { type: Types.ObjectId, ref: 'User', default: null },
+    },
+    default: null,
+    _id: false,
+  })
+  deliveryProof?: WinnerDeliveryProof | null;
 
   // Tirage verifiable (commit-reveal). Le seed est secret jusqu'au tirage,
   // puis revele via l'endpoint public de verification.

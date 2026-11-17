@@ -20,6 +20,7 @@ import { REDIS_CLIENT } from '../../common/redis/redis.module';
 import { RafflesService } from './raffles.service';
 import { Raffle, RaffleDocument, RaffleStatus } from './schemas/raffle.schema';
 import { Ticket, TicketDocument } from '../tickets/schemas/ticket.schema';
+import type { LiveActivityEvent } from './live-activity.service';
 
 const SOCKET_CORS_ORIGINS = (
   process.env.CORS_ORIGINS ||
@@ -95,6 +96,16 @@ export class RafflesLiveGateway
   private lastPayloadAt = 0;
   private payloadInFlight?: Promise<LiveDrawPayload>;
 
+  // Fil d'activite: les achats sont regroupes et diffuses au plus une fois
+  // toutes les 2 s (5 derniers max). Pendant un pic de 1000 achats on emet
+  // donc ~1 message / 2 s au lieu de 1000 broadcasts.
+  private readonly recentActivity: LiveActivityEvent[] = [];
+  private pendingActivity: LiveActivityEvent[] = [];
+  private activityTimer?: NodeJS.Timeout;
+  private static readonly ACTIVITY_FLUSH_MS = 2000;
+  private static readonly ACTIVITY_BATCH = 5;
+  private static readonly ACTIVITY_HISTORY = 10;
+
   constructor(
     @InjectModel(Raffle.name)
     private readonly raffleModel: Model<RaffleDocument>,
@@ -137,6 +148,44 @@ export class RafflesLiveGateway
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    if (this.activityTimer) {
+      clearTimeout(this.activityTimer);
+      this.activityTimer = undefined;
+    }
+  }
+
+  queueActivity(event: LiveActivityEvent) {
+    this.recentActivity.push(event);
+    if (this.recentActivity.length > RafflesLiveGateway.ACTIVITY_HISTORY) {
+      this.recentActivity.splice(
+        0,
+        this.recentActivity.length - RafflesLiveGateway.ACTIVITY_HISTORY,
+      );
+    }
+    this.pendingActivity.push(event);
+    if (this.pendingActivity.length > RafflesLiveGateway.ACTIVITY_BATCH) {
+      this.pendingActivity = this.pendingActivity.slice(
+        -RafflesLiveGateway.ACTIVITY_BATCH,
+      );
+    }
+    if (!this.activityTimer) {
+      this.activityTimer = setTimeout(
+        () => this.flushActivity(),
+        RafflesLiveGateway.ACTIVITY_FLUSH_MS,
+      );
+    }
+  }
+
+  private flushActivity() {
+    this.activityTimer = undefined;
+    const batch = this.pendingActivity;
+    this.pendingActivity = [];
+    if (!batch.length || !this.server) return;
+    try {
+      this.server.emit('live_activity', batch);
+    } catch (error) {
+      this.logger.warn(`live activity emit failed: ${String(error)}`);
+    }
   }
 
   async handleConnection(client: Socket) {
@@ -159,6 +208,9 @@ export class RafflesLiveGateway
     }
 
     this.viewerIds.add(client.id);
+    if (this.recentActivity.length) {
+      client.emit('live_activity', this.recentActivity.slice(-RafflesLiveGateway.ACTIVITY_BATCH));
+    }
     await this.pushUpdateToClient(client);
   }
 
