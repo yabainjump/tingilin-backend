@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   Patch,
   Post,
   Req,
@@ -20,6 +21,7 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
 import { UsersService } from '../users/users.service';
 import type { Response } from 'express';
 
@@ -31,8 +33,11 @@ export class AuthController {
     private readonly usersService: UsersService,
   ) {}
 
+  // Limites par IP relevees: une IP Orange/MTN (CGNAT) est partagee par de
+  // nombreux joueurs. La protection anti-force-brute reste assuree par le
+  // verrouillage PAR COMPTE (AUTH_LOGIN_MAX_ATTEMPTS / AUTH_LOGIN_LOCK_MINUTES).
   @Post('register')
-  @Throttle({ default: { limit: 5, ttl: 5 * 60_000 } })
+  @Throttle({ default: { limit: 20, ttl: 5 * 60_000 } })
   async register(
     @Body() dto: RegisterDto,
     @Req() req: any,
@@ -42,7 +47,7 @@ export class AuthController {
   }
 
   @Post('login')
-  @Throttle({ default: { limit: 8, ttl: 60_000 } })
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   async login(
     @Body() dto: LoginDto,
     @Req() req: any,
@@ -56,7 +61,7 @@ export class AuthController {
   }
 
   @Post('google')
-  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   async google(
     @Body() dto: GoogleAuthDto,
     @Req() req: any,
@@ -91,6 +96,23 @@ export class AuthController {
   @Throttle({ default: { limit: 8, ttl: 5 * 60_000 } })
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
+  }
+
+  /** Lien "Confirmer mon email" (public: le jeton du lien suffit). */
+  @Post('verify-email')
+  @HttpCode(200)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  verifyEmail(@Body() dto: VerifyEmailDto) {
+    return this.authService.verifyEmail(dto.token);
+  }
+
+  @Post('resend-verification')
+  @HttpCode(200)
+  @ApiBearerAuth('access-token')
+  @UseGuards(AuthGuard('jwt'))
+  @Throttle({ default: { limit: 3, ttl: 10 * 60_000 } })
+  resendVerification(@Request() req: any) {
+    return this.authService.resendEmailVerification(req.user.sub);
   }
 
   @Patch('change-password')

@@ -64,6 +64,7 @@ export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
   private readonly analyticsTimezone = 'Africa/Douala';
   private static readonly PAYMENT_EXPIRED_REASON = 'PAYMENT_EXPIRED';
+  private static readonly PROVIDER_REJECTED_REASON = 'PROVIDER_REJECTED';
 
   constructor(
     @InjectModel(Transaction.name)
@@ -123,6 +124,29 @@ export class PaymentsService {
     tx.failedAt = new Date();
     tx.rawProviderStatus = 'payment_expired';
     await tx.save();
+  }
+
+  private async markProviderRejected(tx: TransactionDocument): Promise<void> {
+    try {
+      await this.txModel
+        .updateOne(
+          { _id: tx._id, status: 'PENDING' },
+          {
+            $set: {
+              status: 'FAILED',
+              failReason: PaymentsService.PROVIDER_REJECTED_REASON,
+              failedAt: new Date(),
+              rawProviderStatus: 'provider_rejected',
+            },
+          },
+        )
+        .exec();
+    } catch (error) {
+      // L'expiration automatique prendra le relais; on garde l'erreur metier.
+      this.logger.warn(
+        `Could not close rejected payment ${tx._id.toString()}: ${error instanceof Error ? error.message : 'unknown error'}`,
+      );
+    }
   }
 
   async expirePendingTransactions(now = new Date()): Promise<number> {
@@ -1285,19 +1309,34 @@ export class PaymentsService {
       this.logger.log(
         `[PAYMENT_FLOW] direct_charge_attempt transactionId=${tx._id.toString()} method=${digikuntzInput!.paymentMethodCode}`,
       );
-      const payin = await this.digikuntz.createDirectCharge({
-        amount,
-        reason: this.buildDigikuntzReason(tx),
-        userEmail: digikuntzInput!.userEmail,
-        userPhone: digikuntzInput!.userPhone,
-        userCountry: digikuntzInput!.userCountry,
-        senderName: digikuntzInput!.senderName,
-        paymentMethodCode: this.digikuntzPaymentMethodCode(
-          digikuntzInput!.paymentMethodCode,
-        ),
-        currency: 'XAF',
-        idempotencyKey: `tingilin-${tx._id.toString()}`,
-      });
+      let payin: Awaited<
+        ReturnType<DigikuntzPaymentsService['createDirectCharge']>
+      >;
+      try {
+        payin = await this.digikuntz.createDirectCharge({
+          amount,
+          reason: this.buildDigikuntzReason(tx),
+          userEmail: digikuntzInput!.userEmail,
+          userPhone: digikuntzInput!.userPhone,
+          userCountry: digikuntzInput!.userCountry,
+          senderName: digikuntzInput!.senderName,
+          paymentMethodCode: this.digikuntzPaymentMethodCode(
+            digikuntzInput!.paymentMethodCode,
+          ),
+          currency: 'XAF',
+          idempotencyKey: `tingilin-${tx._id.toString()}`,
+        });
+      } catch (error) {
+        // Un 4xx Digikuntz est un refus definitif AVANT creation du payin
+        // (doc direct-charge): rien ne sera debite. On clot la tentative pour
+        // qu'elle ne bloque ni la limite de depense ni une nouvelle tentative.
+        // Les cas ambigus (5xx, timeout, 409 en cours) restent PENDING pour
+        // la reconciliation.
+        if (error instanceof BadRequestException) {
+          await this.markProviderRejected(tx);
+        }
+        throw error;
+      }
       const payinData =
         payin?.data && typeof payin.data === 'object' ? payin.data : {};
 

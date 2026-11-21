@@ -34,6 +34,8 @@ describe('AuthService', () => {
       clearPasswordResetCode: jest.fn(),
       updatePassword: jest.fn(),
       findById: jest.fn(),
+      markEmailVerified: jest.fn().mockResolvedValue(undefined),
+      storeEmailVerificationToken: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({

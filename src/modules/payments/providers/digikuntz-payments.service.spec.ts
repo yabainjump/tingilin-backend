@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -121,6 +122,7 @@ describe('DigikuntzPaymentsService', () => {
           'x-user-id': 'account-user-id',
           'x-secret-key': 'SK-secret',
         },
+        timeout: 45_000,
       },
     );
     expect(result).toMatchObject({
@@ -182,6 +184,8 @@ describe('DigikuntzPaymentsService', () => {
           'x-secret-key': 'SK-secret',
           'Idempotency-Key': 'tingilin-direct-test',
         },
+        // Mesure reelle: ~9 s pour un prelevement Orange; 15 s etait trop juste.
+        timeout: 45_000,
       },
     );
     expect(result).toMatchObject({
@@ -191,6 +195,26 @@ describe('DigikuntzPaymentsService', () => {
       paymentWithTaxes: '5250',
     });
     expect(result.paymentLink).toBeUndefined();
+  });
+
+  it('lets the payment-creation timeout be tuned within safe bounds', async () => {
+    for (const [value, expected] of [
+      ['60000', 60_000],
+      ['1000', 15_000],
+      ['999999', 90_000],
+      ['abc', 45_000],
+    ] as const) {
+      const { service, post } = createService({
+        DIGIKUNTZ_CHARGE_TIMEOUT_MS: value,
+      });
+      post.mockReturnValue(
+        of({
+          data: { id: 'direct-provider-id', status: 'payin_pending' },
+        } as AxiosResponse),
+      );
+      await service.createDirectCharge(directChargeInput);
+      expect(post.mock.calls[0][2].timeout).toBe(expected);
+    }
   });
 
   it('falls back to hosted checkout when direct charge is disabled', async () => {
@@ -255,6 +279,7 @@ describe('DigikuntzPaymentsService', () => {
           'x-secret-key': 'SK-secret',
           'Idempotency-Key': 'tingilin-disabled-test',
         },
+        timeout: 45_000,
       },
     );
     expect(result).toMatchObject({
@@ -389,6 +414,65 @@ describe('DigikuntzPaymentsService', () => {
       transactionRef: 'IN535#261111013004',
       paymentFlow: 'DIRECT_CHARGE',
     });
+  });
+
+  it.each(['AMOUNT_BELOW_MIN', 'AMOUNT_EXCEEDS_MAX', 'LIMIT_EXCEEDED'])(
+    'does not open a hosted checkout that would fail the same way (%s)',
+    async (code) => {
+      const { service, post } = createService();
+      post.mockReturnValue(
+        throwError(() => ({
+          response: {
+            status: 400,
+            data: { code, message: `raw upstream ${code} detail` },
+          },
+        })),
+      );
+
+      const attempt = service.createDirectCharge(directChargeInput);
+      await expect(attempt).rejects.toThrow(BadRequestException);
+      await expect(
+        service.createDirectCharge(directChargeInput),
+      ).rejects.not.toThrow(/raw upstream/);
+      // Un seul appel par tentative: aucune bascule vers /dev/transaction.
+      expect(post).toHaveBeenCalledTimes(2);
+      expect(post).not.toHaveBeenCalledWith(
+        'https://app.digikuntz.com/dev/transaction',
+        expect.anything(),
+        expect.anything(),
+      );
+    },
+  );
+
+  it('still falls back to hosted checkout for an unresolvable phone (INVALID_PHONE)', async () => {
+    const { service, post } = createService();
+    post
+      .mockReturnValueOnce(
+        throwError(() => ({
+          response: {
+            status: 400,
+            data: { code: 'INVALID_PHONE', message: 'userPhone is invalid' },
+          },
+        })),
+      )
+      .mockReturnValueOnce(
+        of({
+          data: {
+            id: 'hosted-provider-id',
+            status: 'payin_pending',
+            data: {
+              paymentLink:
+                'https://checkout.flutterwave.com/v3/hosted/pay/fallback',
+            },
+          },
+          headers: { 'content-type': 'application/json' },
+        } as AxiosResponse),
+      );
+
+    const result = await service.createDirectCharge(directChargeInput);
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ paymentFlow: 'HOSTED_CHECKOUT' });
   });
 
   it('reports an in-progress idempotent request (409) as a conflict, not a refusal', async () => {

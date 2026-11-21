@@ -5,6 +5,7 @@ import {
   Delete,
   Get,
   Header,
+  HttpCode,
   Param,
   Patch,
   Post,
@@ -30,6 +31,9 @@ import { CreateRaffleDto } from './dto/create-raffle.dto';
 import { UpdateWinnerStatusDto } from './dto/update-winner-status.dto';
 import { UpdateRaffleDto } from './dto/update-raffle.dto';
 import { RafflesService } from './raffles.service';
+import { WinnerClaimService } from './winner-claim.service';
+import { ClaimCodeDto } from './dto/claim-code.dto';
+import { Throttle } from '@nestjs/throttler';
 
 @ApiTags('Raffles Admin')
 @ApiBearerAuth('access-token')
@@ -40,7 +44,78 @@ export class RafflesAdminController {
   constructor(
     private readonly rafflesService: RafflesService,
     private readonly auditService: AuditService,
+    private readonly winnerClaim: WinnerClaimService,
   ) {}
+
+  // ---- Remise d'un lot par code gagnant (6 chiffres) ----------------------
+  // Limite par admin (le limiteur compte par compte connecte): 10 essais/min
+  // rendent impossible de deviner un code parmi 1 000 000.
+
+  @Post('winners/claim-code/lookup')
+  @HttpCode(200)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async lookupClaimCode(@Body() dto: ClaimCodeDto, @Req() req: any) {
+    try {
+      return await this.winnerClaim.lookup(dto.code);
+    } catch (error) {
+      await this.auditService.safeLog({
+        action: 'ADMIN_WINNER_CLAIM_LOOKUP_FAILED',
+        actorUserId: req.user?.sub,
+        actorEmail: req.user?.email,
+        actorRole: req.user?.role,
+        targetType: 'RAFFLE',
+        ip: req.ip,
+        userAgent: req.headers?.['user-agent'],
+      });
+      throw error;
+    }
+  }
+
+  @Post('winners/:id/claim')
+  @HttpCode(200)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async confirmClaim(
+    @Param('id') id: string,
+    @Body() dto: ClaimCodeDto,
+    @Req() req: any,
+  ) {
+    const result = await this.winnerClaim.confirmHandover(
+      id,
+      dto.code,
+      String(req.user?.sub ?? ''),
+    );
+    await this.auditService.safeLog({
+      action: 'ADMIN_WINNER_HANDOVER_CONFIRMED',
+      actorUserId: req.user?.sub,
+      actorEmail: req.user?.email,
+      actorRole: req.user?.role,
+      targetType: 'RAFFLE',
+      targetId: id,
+      metadata: { status: result.status },
+      ip: req.ip,
+      userAgent: req.headers?.['user-agent'],
+    });
+    return result;
+  }
+
+  @Post('winners/:id/claim-code/regenerate')
+  @HttpCode(200)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async regenerateClaimCode(@Param('id') id: string, @Req() req: any) {
+    const result = await this.winnerClaim.issue(id, { isRenewal: true });
+    await this.auditService.safeLog({
+      action: 'ADMIN_WINNER_CLAIM_CODE_REGENERATED',
+      actorUserId: req.user?.sub,
+      actorEmail: req.user?.email,
+      actorRole: req.user?.role,
+      targetType: 'RAFFLE',
+      targetId: id,
+      metadata: { emailDelivered: result.emailDelivered },
+      ip: req.ip,
+      userAgent: req.headers?.['user-agent'],
+    });
+    return result;
+  }
 
   @Get()
   adminList() {

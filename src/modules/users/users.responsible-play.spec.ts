@@ -154,7 +154,7 @@ describe('UsersService - responsible play & referral rewards', () => {
       const update = userModel.updateOne.mock.calls[0][1];
       expect(update.$set.spendingLimit).toBeUndefined();
       const pending = update.$set.pendingSpendingLimit;
-      expect(pending).toMatchObject({ amount: 9000, remove: false });
+      expect(pending).toMatchObject({ amount: 9000, removeLimit: false });
       expect(pending.effectiveAt.getTime()).toBeGreaterThanOrEqual(
         before + SPENDING_LIMIT_LOOSEN_DELAY_MS,
       );
@@ -164,7 +164,7 @@ describe('UsersService - responsible play & referral rewards', () => {
       user.spendingLimit = { period: 'MONTH', amount: 20000, setAt: new Date() };
       const res = await service.setSpendingLimit(USER_ID, null);
       expect(res.applied).toBe('DELAYED');
-      expect(userModel.updateOne.mock.calls[0][1].$set.pendingSpendingLimit.remove).toBe(true);
+      expect(userModel.updateOne.mock.calls[0][1].$set.pendingSpendingLimit.removeLimit).toBe(true);
     });
 
     it('keeps enforcing the old limit until the delayed change is due', async () => {
@@ -172,7 +172,7 @@ describe('UsersService - responsible play & referral rewards', () => {
       user.pendingSpendingLimit = {
         period: 'DAY',
         amount: 50_000,
-        remove: false,
+        removeLimit: false,
         requestedAt: new Date(),
         effectiveAt: new Date(Date.now() + 3_600_000),
       };

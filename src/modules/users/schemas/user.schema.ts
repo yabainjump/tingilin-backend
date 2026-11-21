@@ -19,7 +19,7 @@ export class StoredSpendingLimit {
 export class StoredPendingSpendingLimit {
   period?: SpendingPeriod | null;
   amount?: number | null;
-  remove!: boolean;
+  removeLimit!: boolean;
   requestedAt!: Date;
   effectiveAt!: Date;
 }
@@ -111,6 +111,22 @@ export class User {
   @Prop({ type: Date, default: null })
   adultConfirmedAt?: Date | null;
 
+  // Verification de l'adresse email (lien envoye a l'inscription).
+  // null = jamais confirmee. Les comptes Google sont confirmes d'office.
+  @Prop({ type: Date, default: null })
+  emailVerifiedAt?: Date | null;
+
+  // Empreinte HMAC du jeton du lien (le jeton en clair n'est jamais stocke).
+  // Conservee apres usage pour qu'un 2e clic sur le meme lien reste "ok".
+  @Prop({ type: String, default: null, select: false, index: { sparse: true } })
+  emailVerificationTokenHash?: string | null;
+
+  @Prop({ type: Date, default: null })
+  emailVerificationExpiresAt?: Date | null;
+
+  @Prop({ type: Date, default: null })
+  emailVerificationSentAt?: Date | null;
+
   // Le joueur apparait-il dans le fil "X vient de prendre N tickets" ?
   // Seuls prenom + initiale + region sont diffuses; le joueur peut refuser.
   @Prop({ type: Boolean, default: true })
@@ -133,7 +149,7 @@ export class User {
     type: {
       period: { type: String, enum: [...SPENDING_PERIODS, null] },
       amount: { type: Number, min: 0 },
-      remove: { type: Boolean, default: false },
+      removeLimit: { type: Boolean, default: false },
       requestedAt: { type: Date },
       effectiveAt: { type: Date },
     },

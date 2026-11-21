@@ -12,7 +12,8 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { ParticipationsModule } from './modules/participations/participations.module';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
-import { ThrottlerGuard } from '@nestjs/throttler';
+import { MailModule } from './common/mail/mail.module';
+import { UserAwareThrottlerGuard } from './common/throttling/user-aware-throttler.guard';
 import { ShareModule } from './modules/share/share.module';
 import { PollsModule } from './modules/polls/polls.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -22,6 +23,7 @@ import { setServers as setDnsServers } from 'dns';
 import { ConfigService } from '@nestjs/config';
 import {
   assertRuntimeSecurityConfig,
+  runtimeConfigWarnings,
   parseBooleanFlag,
 } from './common/config/runtime-security';
 import { RedisModule, REDIS_CLIENT } from './common/redis/redis.module';
@@ -130,6 +132,7 @@ if (customDnsServers.length > 0) {
           : {}),
       }),
     }),
+    MailModule,
     UsersModule,
     AuthModule,
     ProductsModule,
@@ -148,7 +151,7 @@ if (customDnsServers.length > 0) {
     AppService,
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: UserAwareThrottlerGuard,
     },
   ],
 })
@@ -157,5 +160,9 @@ export class AppModule implements OnModuleInit {
 
   onModuleInit(): void {
     assertRuntimeSecurityConfig(this.config);
+    const logger = new Logger('RuntimeConfig');
+    for (const warning of runtimeConfigWarnings(this.config)) {
+      logger.warn(warning);
+    }
   }
 }

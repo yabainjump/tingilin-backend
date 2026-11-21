@@ -15,6 +15,7 @@ import { RafflesScheduler } from './raffles.sheduler';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { RafflesLiveGateway } from './raffles.live.gateway';
 import { LiveActivityService } from './live-activity.service';
+import { WinnerClaimService } from './winner-claim.service';
 import { AuditModule } from '../audit/audit.module';
 import {
   Transaction,
@@ -51,6 +52,7 @@ import {
     RafflesScheduler,
     RafflesLiveGateway,
     LiveActivityService,
+    WinnerClaimService,
   ],
   exports: [RafflesService, LiveActivityService],
 })

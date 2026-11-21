@@ -4,6 +4,7 @@ import {
   ConflictException,
   BadRequestException,
   Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
@@ -23,6 +24,11 @@ import {
   isProductionEnv,
 } from '../../common/config/runtime-security';
 import { normalizeStoredPhone } from '../../common/utils/phone.util';
+import { buildSmtpTransport } from '../../common/mail/smtp-transport';
+import {
+  renderWelcomeVerificationEmail,
+  type RenderedEmail,
+} from './emails/welcome-verification.email';
 
 type MailDeliveryResult = {
   delivered: boolean;
@@ -37,6 +43,8 @@ type MailDeliveryResult = {
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+  private static readonly EMAIL_VERIFICATION_TTL_HOURS = 48;
+  private static readonly EMAIL_VERIFICATION_RESEND_COOLDOWN_MS = 60_000;
   private googleOAuthClient: OAuth2Client | null = null;
   private googleOAuthClientId = '';
 
@@ -96,7 +104,154 @@ export class AuthService {
       adultConfirmed: dto.isAdult === true,
     });
 
+    // Sans attendre: un SMTP lent ou en panne ne doit ni ralentir ni faire
+    // echouer l'inscription (le joueur pourra redemander le lien).
+    void this.sendEmailVerification(user, { isReminder: false }).catch(
+      () => undefined,
+    );
+
     return this.issueTokens(user);
+  }
+
+  /**
+   * Cree un nouveau lien de verification et envoie l'email. Le jeton (256
+   * bits) n'est jamais stocke en clair: seule son empreinte HMAC l'est.
+   */
+  private async sendEmailVerification(
+    user: any,
+    opts: { isReminder: boolean },
+  ): Promise<MailDeliveryResult> {
+    const appUrl = this.publicAppUrl();
+    if (!appUrl) {
+      this.logger.error(
+        '[VERIFY_EMAIL] PUBLIC_APP_URL manquant: lien de verification non envoye.',
+      );
+      return { delivered: false, reason: 'SMTP_CONFIG_MISSING' };
+    }
+
+    const token = crypto.randomBytes(32).toString('base64url');
+    const ttlHours = AuthService.EMAIL_VERIFICATION_TTL_HOURS;
+    await this.usersService.storeEmailVerificationToken(
+      user._id,
+      this.hashEmailVerificationToken(token),
+      new Date(Date.now() + ttlHours * 3_600_000),
+    );
+
+    const verifyUrl = new URL('/auth/verify-email', appUrl);
+    verifyUrl.searchParams.set('token', token);
+    const email = renderWelcomeVerificationEmail({
+      appName: String(this.config.get<string>('APP_NAME', 'Tinguilin')),
+      firstName: String(user.firstName ?? ''),
+      verifyUrl: verifyUrl.toString(),
+      appUrl,
+      ttlHours,
+      isReminder: opts.isReminder,
+    });
+    return this.deliverEmail(String(user.email ?? ''), email, 'VERIFY_EMAIL');
+  }
+
+  private async sendGoogleWelcomeEmail(user: any): Promise<MailDeliveryResult> {
+    const appUrl = this.publicAppUrl();
+    if (!appUrl) return { delivered: false, reason: 'SMTP_CONFIG_MISSING' };
+    const email = renderWelcomeVerificationEmail({
+      appName: String(this.config.get<string>('APP_NAME', 'Tinguilin')),
+      firstName: String(user.firstName ?? ''),
+      verifyUrl: null,
+      appUrl,
+      ttlHours: AuthService.EMAIL_VERIFICATION_TTL_HOURS,
+    });
+    return this.deliverEmail(String(user.email ?? ''), email, 'WELCOME_GOOGLE');
+  }
+
+  async verifyEmail(token: string) {
+    const raw = String(token ?? '').trim();
+    if (!/^[A-Za-z0-9_-]{43}$/.test(raw)) {
+      throw new BadRequestException('Lien invalide ou expiré');
+    }
+    const user = await this.usersService.verifyEmailByTokenHash(
+      this.hashEmailVerificationToken(raw),
+    );
+    if (!user) throw new BadRequestException('Lien invalide ou expiré');
+    return { ok: true, emailVerified: true };
+  }
+
+  async resendEmailVerification(userId: string) {
+    const user = await this.usersService.findById(userId);
+    if (user.emailVerifiedAt) return { ok: true, alreadyVerified: true };
+
+    const lastSent = user.emailVerificationSentAt
+      ? new Date(user.emailVerificationSentAt).getTime()
+      : 0;
+    const waitMs =
+      lastSent + AuthService.EMAIL_VERIFICATION_RESEND_COOLDOWN_MS - Date.now();
+    if (waitMs > 0) {
+      throw new BadRequestException(
+        `Un email vient d'être envoyé. Réessaie dans ${Math.ceil(waitMs / 1000)} s.`,
+      );
+    }
+
+    const delivery = await this.sendEmailVerification(user, {
+      isReminder: true,
+    });
+    if (!delivery.delivered) {
+      throw new ServiceUnavailableException(
+        "L'email n'a pas pu être envoyé pour le moment. Réessaie plus tard.",
+      );
+    }
+    return { ok: true, alreadyVerified: false, email: user.email };
+  }
+
+  private hashEmailVerificationToken(token: string): string {
+    return crypto
+      .createHmac('sha256', this.refreshSecret())
+      .update(`email-verify:${token}`)
+      .digest('hex');
+  }
+
+  private publicAppUrl(): string {
+    const raw = String(this.config.get<string>('PUBLIC_APP_URL', '')).trim();
+    try {
+      const parsed = new URL(raw);
+      if (!['https:', 'http:'].includes(parsed.protocol)) return '';
+      return parsed.origin;
+    } catch {
+      return '';
+    }
+  }
+
+  private async deliverEmail(
+    toEmail: string,
+    email: RenderedEmail,
+    tag: string,
+  ): Promise<MailDeliveryResult> {
+    if (!toEmail.trim()) return { delivered: false, reason: 'EMAIL_TARGET_MISSING' };
+    const smtp = this.buildSmtpTransporter();
+    if (!smtp.transporter) {
+      return { delivered: false, reason: smtp.reason ?? 'SMTP_CONFIG_MISSING' };
+    }
+    const from =
+      String(this.config.get<string>('MAIL_FROM', '')).trim() ||
+      'Tingilin <no-reply@tingilin.local>';
+    try {
+      const info: { messageId?: string } = await smtp.transporter.sendMail({
+        from,
+        to: toEmail,
+        ...email,
+      });
+      this.logger.log(
+        `[${tag}] email accepte par le serveur SMTP (messageId=${String(info?.messageId ?? '?')})`,
+      );
+      return { delivered: true, reason: 'EMAIL_SENT' };
+    } catch (error: any) {
+      this.logger.error(
+        `[${tag}] Envoi email échoué via ${this.describeSmtpEndpoint()}: ${error?.message ?? error}`,
+      );
+      return {
+        delivered: false,
+        reason: 'SMTP_SEND_FAILED',
+        errorMessage: String(error?.message ?? error),
+      };
+    }
   }
 
   /**
@@ -116,6 +271,7 @@ export class AuthService {
     if (!email) throw new UnauthorizedException('Google account has no email');
 
     let user = await this.usersService.findByEmail(email);
+    const isNewAccount = !user;
 
     if (!user) {
       const fullName = String(profile.name ?? '').trim();
@@ -156,9 +312,13 @@ export class AuthService {
         referredBy,
         role: undefined,
         adultConfirmed: dto.isAdult === true,
+        // Google a deja verifie l'adresse (email_verified exige plus haut).
+        emailVerified: true,
       });
     } else if (String(user.status ?? 'ACTIVE').toUpperCase() !== 'ACTIVE') {
       throw new UnauthorizedException('Account suspended');
+    } else if (!user.emailVerifiedAt) {
+      await this.usersService.markEmailVerified(user._id);
     }
 
     await this.auditService.safeLog({
@@ -170,6 +330,11 @@ export class AuthService {
       targetId: user._id.toString(),
       metadata: { success: true, provider: 'google' },
     });
+
+    if (isNewAccount) {
+      // Email deja verifie par Google: simple mot de bienvenue, sans lien.
+      void this.sendGoogleWelcomeEmail(user).catch(() => undefined);
+    }
 
     return this.issueTokens(user);
   }
@@ -472,6 +637,8 @@ export class AuthService {
     user.passwordResetCodeExpiresAt = null;
     user.passwordResetRequestedAt = null;
     user.passwordResetAttempts = 0;
+    // Le code a ete recu par email: l'adresse est donc prouvee.
+    if (!user.emailVerifiedAt) user.emailVerifiedAt = new Date();
     this.invalidateRefreshState(user, { bumpTokenVersion: true });
     await user.save();
 
@@ -946,80 +1113,7 @@ export class AuthService {
     transporter: nodemailer.Transporter | null;
     reason?: 'SMTP_CONFIG_MISSING';
   } {
-    const host = String(this.config.get<string>('SMTP_HOST', '')).trim();
-    const port = Number(this.config.get<string>('SMTP_PORT', '587'));
-    const secure =
-      String(this.config.get<string>('SMTP_SECURE', 'false'))
-        .trim()
-        .toLowerCase() === 'true';
-    const mailFrom = String(this.config.get<string>('MAIL_FROM', '')).trim();
-    const userRaw = String(this.config.get<string>('SMTP_USER', '')).trim();
-    const userFromMailFrom = this.extractEmailFromMailbox(mailFrom);
-    const user = this.normalizeSmtpUser(userRaw, userFromMailFrom);
-    const pass = String(this.config.get<string>('SMTP_PASS', ''))
-      .replace(/\s+/g, '')
-      .trim();
-    const service = String(this.config.get<string>('SMTP_SERVICE', '')).trim();
-    const tlsRejectUnauthorized =
-      String(this.config.get<string>('SMTP_TLS_REJECT_UNAUTHORIZED', 'true'))
-        .trim()
-        .toLowerCase() !== 'false';
-    const tlsServername = String(
-      this.config.get<string>('SMTP_TLS_SERVERNAME', ''),
-    ).trim();
-
-    if ((!host && !service) || !user || !pass) {
-      this.logger.error(
-        `[SMTP] Configuration incomplete pour l’envoi des emails: ${JSON.stringify(
-          {
-            hasHost: Boolean(host),
-            hasService: Boolean(service),
-            hasUser: Boolean(user),
-            hasPass: Boolean(pass),
-            hasMailFrom: Boolean(mailFrom),
-          },
-        )}`,
-      );
-      return { transporter: null, reason: 'SMTP_CONFIG_MISSING' };
-    }
-
-    const transporter = nodemailer.createTransport({
-      ...(service
-        ? { service }
-        : {
-            host,
-            port,
-            secure,
-          }),
-      auth: { user, pass },
-      tls: {
-        rejectUnauthorized: tlsRejectUnauthorized,
-        ...(tlsServername ? { servername: tlsServername } : {}),
-      },
-    });
-
-    return { transporter };
-  }
-
-  private normalizeSmtpUser(userRaw: string, fallbackEmail: string): string {
-    const user = String(userRaw ?? '').trim();
-    return user || fallbackEmail;
-  }
-
-  private extractEmailFromMailbox(value: string): string {
-    const raw = String(value ?? '').trim();
-    if (!raw) return '';
-
-    const angleMatch = raw.match(/<([^>]+)>/);
-    if (angleMatch?.[1]) {
-      return String(angleMatch[1]).trim().toLowerCase();
-    }
-
-    if (raw.includes('@')) {
-      return raw.toLowerCase();
-    }
-
-    return '';
+    return buildSmtpTransport(this.config, this.logger);
   }
 
   private describeSmtpEndpoint(): string {

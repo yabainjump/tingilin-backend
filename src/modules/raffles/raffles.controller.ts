@@ -11,6 +11,7 @@ import {
 import { ApiTags } from '@nestjs/swagger';
 import { RafflesService } from './raffles.service';
 import { RafflesPublicService } from './raffles.public.service';
+import { WinnerClaimService } from './winner-claim.service';
 
 import { AdminCreateRaffleDto } from './dto/admin-create-raffle.dto';
 
@@ -24,6 +25,7 @@ export class RafflesController {
   constructor(
     private readonly rafflesService: RafflesService,
     private readonly rafflesPublicService: RafflesPublicService,
+    private readonly winnerClaim: WinnerClaimService,
   ) {}
 
   @Get()
@@ -90,6 +92,14 @@ export class RafflesController {
   @Get(':id/winner')
   getWinner(@Param('id') id: string) {
     return this.rafflesService.getWinnerPublic(id);
+  }
+
+  // Code de retrait: visible uniquement par le gagnant de cette tombola.
+  @Get(':id/winner-claim')
+  @UseGuards(JwtAuthGuard)
+  myWinnerClaim(@Param('id') id: string, @Req() req: any) {
+    const userId = String(req.user?.sub || req.user?.id || req.user?.userId || '');
+    return this.winnerClaim.getForWinner(id, userId);
   }
 
   @Get('winners/list')

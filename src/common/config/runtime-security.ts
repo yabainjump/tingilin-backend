@@ -67,9 +67,41 @@ export function getWebhookSignatureMode(
   return 'provider-verify';
 }
 
+/**
+ * Reglages non bloquants mais indispensables a certaines fonctions: renvoie
+ * les avertissements a journaliser au demarrage (l'API demarre quand meme).
+ */
+export function runtimeConfigWarnings(config: ConfigService): string[] {
+  const warnings: string[] = [];
+  const isProd = isProductionEnv(config.get<string>('NODE_ENV', 'development'));
+  const appUrl = String(config.get<string>('PUBLIC_APP_URL', '')).trim();
+  let appUrlOk = false;
+  try {
+    const parsed = new URL(appUrl);
+    appUrlOk = isProd ? parsed.protocol === 'https:' : /^https?:$/.test(parsed.protocol);
+  } catch {
+    appUrlOk = false;
+  }
+  if (!appUrlOk) {
+    warnings.push(
+      'PUBLIC_APP_URL manquant ou invalide: les emails de confirmation et de gain ne partiront PAS (attendu: https://tinguilin.yaba-in.com).',
+    );
+  }
+  if (isProd && !String(config.get<string>('WINNER_CLAIM_SECRET', '')).trim()) {
+    warnings.push(
+      'WINNER_CLAIM_SECRET absent: les codes de retrait des gagnants sont derives de JWT_REFRESH_SECRET (changer ce dernier invaliderait les codes non utilises).',
+    );
+  }
+  return warnings;
+}
+
 export function assertRuntimeSecurityConfig(config: ConfigService): void {
   getRequiredSecret(config, 'JWT_ACCESS_SECRET', { minLength: 32 });
   getRequiredSecret(config, 'JWT_REFRESH_SECRET', { minLength: 32 });
+  // Optionnel, mais s'il est fourni il doit etre robuste (fail closed).
+  if (String(config.get<string>('WINNER_CLAIM_SECRET', '')).trim()) {
+    getRequiredSecret(config, 'WINNER_CLAIM_SECRET', { minLength: 32 });
+  }
 
   const isProd = isProductionEnv(config.get<string>('NODE_ENV', 'development'));
   if (!isProd) {

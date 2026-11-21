@@ -117,8 +117,58 @@ export class UsersService {
       referralCode: user.referralCode,
       freeTicketsBalance: Number(user.freeTicketsBalance ?? 0),
       adultConfirmed: Boolean(user.adultConfirmedAt),
+      emailVerified: Boolean(user.emailVerifiedAt),
       showInLiveFeed: user.showInLiveFeed !== false,
     };
+  }
+
+  /** Enregistre un nouveau lien de verification (seule l'empreinte est gardee). */
+  async storeEmailVerificationToken(
+    userId: Types.ObjectId | string,
+    tokenHash: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    await this.userModel
+      .updateOne(
+        { _id: userId },
+        {
+          $set: {
+            emailVerificationTokenHash: tokenHash,
+            emailVerificationExpiresAt: expiresAt,
+            emailVerificationSentAt: new Date(),
+          },
+        },
+      )
+      .exec();
+  }
+
+  /**
+   * Confirme l'email du compte qui porte ce lien encore valide. Idempotent:
+   * un 2e clic sur le meme lien renvoie le meme compte (deja confirme).
+   */
+  async verifyEmailByTokenHash(tokenHash: string): Promise<UserDocument | null> {
+    const now = new Date();
+    const filter = {
+      emailVerificationTokenHash: tokenHash,
+      emailVerificationExpiresAt: { $gt: now },
+    };
+    await this.userModel
+      .updateOne(
+        { ...filter, emailVerifiedAt: null },
+        { $set: { emailVerifiedAt: now } },
+      )
+      .exec();
+    return this.userModel.findOne(filter).exec();
+  }
+
+  /** Email prouve par un autre moyen (Google, code de reinitialisation). */
+  async markEmailVerified(userId: Types.ObjectId | string): Promise<void> {
+    await this.userModel
+      .updateOne(
+        { _id: userId, emailVerifiedAt: null },
+        { $set: { emailVerifiedAt: new Date() } },
+      )
+      .exec();
   }
 
   async updateMe(id: string, dto: UpdateMeDto) {
@@ -176,6 +226,7 @@ export class UsersService {
     region?: string | null;
     referredBy?: string | null;
     adultConfirmed?: boolean;
+    emailVerified?: boolean;
   }) {
     const email = params.email.trim().toLowerCase();
     const username = String(params.username ?? '')
@@ -205,6 +256,7 @@ export class UsersService {
             ? new Types.ObjectId(params.referredBy)
             : null,
         adultConfirmedAt: params.adultConfirmed === true ? new Date() : null,
+        emailVerifiedAt: params.emailVerified === true ? new Date() : null,
       });
     } catch (error: any) {
       const code = Number(error?.code ?? 0);
@@ -969,7 +1021,7 @@ export class UsersService {
             pendingSpendingLimit: {
               period: next?.period ?? null,
               amount: next?.amount ?? null,
-              remove: next === null,
+              removeLimit: next === null,
               requestedAt: now,
               effectiveAt,
             },

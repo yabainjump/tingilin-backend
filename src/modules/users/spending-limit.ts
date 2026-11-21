@@ -82,7 +82,7 @@ export function normalizePendingSpendingLimit(
   if (!effectiveAt || !Number.isFinite(effectiveAt.getTime())) return null;
   const requestedAt = raw.requestedAt ? new Date(raw.requestedAt) : effectiveAt;
   return {
-    next: raw.remove === true ? null : normalizeSpendingLimit(raw),
+    next: raw.removeLimit === true ? null : normalizeSpendingLimit(raw),
     requestedAt,
     effectiveAt,
   };

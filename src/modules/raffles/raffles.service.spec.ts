@@ -1,3 +1,4 @@
+import { WinnerClaimService } from './winner-claim.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getConnectionToken, getModelToken } from '@nestjs/mongoose';
 import { RafflesService } from './raffles.service';
@@ -105,6 +106,10 @@ describe('RafflesService', () => {
         { provide: getConnectionToken(), useValue: connectionMock },
         { provide: NotificationsService, useValue: notificationsMock },
         { provide: QueryCacheService, useValue: queryCacheMock },
+        {
+          provide: WinnerClaimService,
+          useValue: { issue: jest.fn().mockResolvedValue(undefined) },
+        },
       ],
     }).compile();
 
@@ -440,6 +445,32 @@ describe('RafflesService', () => {
         prizesValueXaf: 2100000,
         currency: 'XAF',
       });
+    });
+
+    it('lists the claim-code state of each winner, never the code itself', async () => {
+      raffleModelMock.aggregate.mockReturnValue({
+        exec: jest.fn().mockResolvedValue([
+          {
+            data: [
+              {
+                raffleId: 'r1',
+                status: 'PENDING_VERIFICATION',
+                claim: { issued: true, issuedAt: new Date('2026-11-20'), claimedAt: null },
+              },
+            ],
+            total: [{ count: 1 }],
+          },
+        ]),
+      });
+      const res: any = await service.adminListWinners({});
+      expect(res.data[0].claim).toEqual({
+        issued: true,
+        issuedAt: new Date('2026-11-20'),
+        claimedAt: null,
+      });
+      // Le pipeline ne projette que l'etat, pas l'empreinte ni le chiffre.
+      const pipeline = JSON.stringify(raffleModelMock.aggregate.mock.calls[0][0]);
+      expect(pipeline).not.toMatch(/codeHash|codeEnc/);
     });
   });
 });

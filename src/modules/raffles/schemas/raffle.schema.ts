@@ -49,6 +49,14 @@ export class WinnerDeliveryProof {
   publishedBy?: Types.ObjectId | null;
 }
 
+export class WinnerClaim {
+  codeHash!: string;
+  codeEnc!: string;
+  issuedAt!: Date;
+  claimedAt?: Date | null;
+  claimedBy?: Types.ObjectId | null;
+}
+
 export type RaffleDocument = HydratedDocument<Raffle>;
 
 @Schema({ timestamps: true })
@@ -132,6 +140,24 @@ export class Raffle {
   })
   deliveryProof?: WinnerDeliveryProof | null;
 
+  // Code de retrait a 6 chiffres remis au gagnant (email + app) et saisi par
+  // un admin a la remise du lot. Jamais renvoye par l'API publique/admin:
+  // codeHash (HMAC) sert a la recherche, codeEnc (AES-GCM) a le reafficher
+  // au seul gagnant. Usage unique (claimedAt).
+  @Prop({
+    type: {
+      codeHash: { type: String, required: true },
+      codeEnc: { type: String, required: true },
+      issuedAt: { type: Date, required: true },
+      claimedAt: { type: Date, default: null },
+      claimedBy: { type: Types.ObjectId, ref: 'User', default: null },
+    },
+    default: null,
+    _id: false,
+    select: false,
+  })
+  winnerClaim?: WinnerClaim | null;
+
   // Tirage verifiable (commit-reveal). Le seed est secret jusqu'au tirage,
   // puis revele via l'endpoint public de verification.
   @Prop({ type: String, select: false, default: null })
@@ -170,3 +196,4 @@ RaffleSchema.index({
   'winner.drawnAt': -1,
 });
 RaffleSchema.index({ winnerTicketId: 1 });
+RaffleSchema.index({ 'winnerClaim.codeHash': 1 }, { sparse: true });

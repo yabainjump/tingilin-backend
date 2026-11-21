@@ -1,4 +1,9 @@
-import { ForbiddenException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
+import { Types } from 'mongoose';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getConnectionToken, getModelToken } from '@nestjs/mongoose';
 import { PaymentsService } from './payments.service';
@@ -543,6 +548,80 @@ describe('PaymentsService', () => {
       expect(assertCanSpend).toHaveBeenCalledWith('665f1a2b3c4d5e6f7a8b9c0e', 1500);
       expect(txModelMock.create).not.toHaveBeenCalled();
       expect(digikuntzMock.createDirectCharge).not.toHaveBeenCalled();
+    });
+
+    describe('provider refusal of the direct charge', () => {
+      const txId = new Types.ObjectId('665f1a2b3c4d5e6f7a8b9c0d');
+      const arrange = () => {
+        Object.assign(service as any, {
+          rafflesService: {
+            adminGetById: jest.fn().mockResolvedValue({
+              status: 'LIVE',
+              ticketPrice: 500,
+              currency: 'XAF',
+              totalTickets: 0,
+              ticketsSold: 0,
+            }),
+          },
+          usersService: {
+            findById: jest.fn().mockResolvedValue({
+              email: 'u@example.com',
+              firstName: 'A',
+              lastName: 'B',
+            }),
+            assertCanSpend: jest.fn().mockResolvedValue(undefined),
+          },
+          participationsService: {
+            getOrCreate: jest
+              .fn()
+              .mockResolvedValue({ totalTicketsBought: 0 }),
+          },
+        });
+        txModelMock.create.mockResolvedValue({
+          _id: txId,
+          quantity: 1,
+          save: jest.fn(),
+        });
+        txModelMock.updateOne.mockReturnValue({
+          exec: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+        });
+      };
+      const intent = () =>
+        service.createIntent('665f1a2b3c4d5e6f7a8b9c0e', {
+          raffleId: '665f1a2b3c4d5e6f7a8b9c0f',
+          amount: 500,
+          provider: 'DIGIKUNTZ',
+          userPhone: '677123456',
+          paymentMethodCode: 'MTN',
+        } as any);
+
+      it('closes the attempt on a definitive 4xx so it no longer counts as pending spend', async () => {
+        arrange();
+        const refusal = new BadRequestException('Ce montant dépasse le maximum');
+        digikuntzMock.createDirectCharge.mockRejectedValue(refusal);
+
+        await expect(intent()).rejects.toBe(refusal);
+
+        expect(txModelMock.updateOne).toHaveBeenCalledWith(
+          { _id: txId, status: 'PENDING' },
+          {
+            $set: expect.objectContaining({
+              status: 'FAILED',
+              failReason: 'PROVIDER_REJECTED',
+            }),
+          },
+        );
+      });
+
+      it('keeps an ambiguous provider failure (5xx/timeout) pending for reconciliation', async () => {
+        arrange();
+        digikuntzMock.createDirectCharge.mockRejectedValue(
+          new BadGatewayException('Digikuntz direct-charge failed (502)'),
+        );
+
+        await expect(intent()).rejects.toBeInstanceOf(BadGatewayException);
+        expect(txModelMock.updateOne).not.toHaveBeenCalled();
+      });
     });
 
     it('refuses a free ticket to an unconfirmed adult before reserving stock', async () => {

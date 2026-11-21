@@ -34,6 +34,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { storeOptimizedImageFromDataUrl } from '../../common/uploads/image-storage';
 import { normalizeRegion } from '../../common/regions';
 import { QueryCacheService } from '../../common/cache/query-cache.service';
+import { WinnerClaimService } from './winner-claim.service';
 import {
   PROVABLY_FAIR_ALGORITHM,
   PROVABLY_FAIR_FORMULA,
@@ -70,6 +71,7 @@ export class RafflesService {
 
     private readonly notifications: NotificationsService,
     private readonly queryCache: QueryCacheService,
+    private readonly winnerClaim: WinnerClaimService,
   ) {}
 
   private ensureObjectId(id: string, msg = 'Invalid id'): void {
@@ -814,6 +816,18 @@ export class RafflesService {
                   productImageUrl: '$product.imageUrl',
                   prizeValue: { $ifNull: ['$product.realValue', 0] },
                   deliveryProof: '$deliveryProof',
+                  // Etat du code de retrait, jamais le code ni son empreinte.
+                  claim: {
+                    issued: {
+                      $cond: [
+                        { $ifNull: ['$winnerClaim.issuedAt', false] },
+                        true,
+                        false,
+                      ],
+                    },
+                    issuedAt: { $ifNull: ['$winnerClaim.issuedAt', null] },
+                    claimedAt: { $ifNull: ['$winnerClaim.claimedAt', null] },
+                  },
                   winnerUserId: {
                     $cond: [
                       { $ifNull: ['$winner.userId', false] },
@@ -944,6 +958,12 @@ export class RafflesService {
           deliveryProof: row?.deliveryProof
             ? this.publicDeliveryProof(row.deliveryProof)
             : null,
+          // Etat du code de retrait (jamais le code lui-meme).
+          claim: {
+            issued: row?.claim?.issued === true,
+            issuedAt: row?.claim?.issuedAt ?? null,
+            claimedAt: row?.claim?.claimedAt ?? null,
+          },
         };
       }),
       page,
@@ -1560,11 +1580,20 @@ export class RafflesService {
 
     const participantIds = await this.participantUserIds(raffle._id);
     await this.notifyDrawStarted(claimed, participantIds);
+    // Code de retrait (6 chiffres) envoye au gagnant. Sans bloquer le tirage:
+    // un SMTP lent ne doit pas le retarder; un admin peut regenerer le code.
+    void this.winnerClaim
+      .issue(String(raffle._id), { isRenewal: false })
+      .catch((error: unknown) =>
+        this.logger.warn(
+          `Winner claim code not issued for raffle ${String(raffle._id)}: ${error instanceof Error ? error.message : 'unknown error'}`,
+        ),
+      );
     await this.notifications.create({
       userId: String(ticket.userId),
       type: 'WINNER_ANNOUNCED',
       title: '🎉 Félicitations !',
-      body: `Tu as gagné la tombola 🎉`,
+      body: 'Tu as gagné la tombola 🎉 Ton code de retrait est sur ton ticket gagnant et dans tes emails.',
       data: {
         raffleId: String(raffle._id),
         ticketId: String(ticket._id),

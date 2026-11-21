@@ -27,6 +27,20 @@ export interface DigikuntzTransactionResponse {
 
 export type DigikuntzPaymentMethodCode = 'ORANGEMONEY' | 'MTN';
 
+/**
+ * Codes d'erreur de POST /dev/direct-charge (doc /dev/api-doc) pour lesquels
+ * le checkout heberge echouerait de la meme facon: on n'y bascule pas et on
+ * explique au joueur. Ces 400 arrivent AVANT toute creation de payin.
+ */
+const DIRECT_CHARGE_FINAL_REJECTIONS: Record<string, string> = {
+  AMOUNT_BELOW_MIN:
+    'Ce montant est en dessous du minimum accepté par le paiement mobile. Prends plus de tickets.',
+  AMOUNT_EXCEEDS_MAX:
+    'Ce montant dépasse le maximum accepté par le paiement mobile en une fois. Prends moins de tickets.',
+  LIMIT_EXCEEDED:
+    'Le paiement mobile est momentanément indisponible pour ce montant. Réessaie plus tard ou avec moins de tickets.',
+};
+
 export type NormalizedDigikuntzStatus =
   | 'pending'
   | 'success'
@@ -67,6 +81,13 @@ export class DigikuntzPaymentsService {
   private readonly secretKey: string;
   private readonly callbackUrl: string;
   private readonly checkoutHosts: Set<string>;
+  /**
+   * Delai d'attente des appels qui CREENT un paiement (POST /dev/direct-charge
+   * et /dev/transaction). Mesure reelle (2026-11-20): 9 s pour un prelevement
+   * direct Orange; le 15 s global coupait trop pres et rendait l'issue ambigue
+   * des que Digikuntz ralentissait. Les lectures gardent 15 s.
+   */
+  private readonly chargeTimeoutMs: number;
   private accessValidatedAt = 0;
   private accessValidationInFlight?: Promise<void>;
   private readonly accessValidationTtlMs = 60_000;
@@ -94,6 +115,12 @@ export class DigikuntzPaymentsService {
         .map((host) => host.trim().toLowerCase())
         .filter(Boolean),
     );
+    const configuredTimeout = Number(
+      this.config.get<string>('DIGIKUNTZ_CHARGE_TIMEOUT_MS') ?? '',
+    );
+    this.chargeTimeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+      ? Math.min(90_000, Math.max(15_000, Math.floor(configuredTimeout)))
+      : 45_000;
   }
 
   private resolveCallbackUrl(): string {
@@ -357,6 +384,16 @@ export class DigikuntzPaymentsService {
     }
 
     return '';
+  }
+
+  /** Code metier documente (`code`/`errorCode`) d'une erreur Digikuntz. */
+  private providerErrorCode(error: unknown): string {
+    const response = this.asRecord(this.asRecord(error).response);
+    const records = this.transactionRecords(
+      this.decodeJsonPayload(response.data),
+    );
+    const code = this.firstRecordValue(records, ['code', 'errorCode']);
+    return /^[A-Z][A-Z0-9_]{2,63}$/i.test(code) ? code.toUpperCase() : '';
   }
 
   private shouldFallbackToHostedCheckout(error: unknown): boolean {
@@ -779,6 +816,7 @@ export class DigikuntzPaymentsService {
       const res = await firstValueFrom(
         this.http.post(url, body, {
           headers: this.headers(input.idempotencyKey),
+          timeout: this.chargeTimeoutMs,
         }),
       );
       const contentType = String(res.headers?.['content-type'] ?? '')
@@ -865,6 +903,7 @@ export class DigikuntzPaymentsService {
       const res = await firstValueFrom(
         this.http.post(url, body, {
           headers: this.headers(input.idempotencyKey),
+          timeout: this.chargeTimeoutMs,
         }),
       );
       const payload = this.decodeJsonPayload(res.data);
@@ -933,6 +972,16 @@ export class DigikuntzPaymentsService {
           : ('DIRECT_CHARGE' as const),
       };
     } catch (e: unknown) {
+      const rejectionCode = this.providerErrorCode(e);
+      const finalRejection = DIRECT_CHARGE_FINAL_REJECTIONS[rejectionCode];
+      if (finalRejection) {
+        const log = `Digikuntz direct charge rejected; code=${rejectionCode}; amount=${input.amount}`;
+        // LIMIT_EXCEEDED = plafond du COMPTE marchand: a traiter cote Digikuntz.
+        if (rejectionCode === 'LIMIT_EXCEEDED') this.logger.error(log);
+        else this.logger.warn(log);
+        throw new BadRequestException(finalRejection);
+      }
+
       if (this.shouldFallbackToHostedCheckout(e)) {
         const response = this.asRecord(this.asRecord(e).response);
         const status = Number(response.status ?? 0);

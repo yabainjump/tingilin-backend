@@ -1,3 +1,4 @@
+import { WinnerClaimService } from './winner-claim.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { RafflesController } from './raffles.controller';
 import { RafflesService } from './raffles.service';
@@ -12,6 +13,7 @@ describe('RafflesController', () => {
       providers: [
         { provide: RafflesService, useValue: {} },
         { provide: RafflesPublicService, useValue: {} },
+        { provide: WinnerClaimService, useValue: {} },
       ],
     }).compile();
 
