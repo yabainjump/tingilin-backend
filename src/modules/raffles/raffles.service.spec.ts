@@ -1,3 +1,4 @@
+import { PushService } from '../notifications/push.service';
 import { WinnerClaimService } from './winner-claim.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getConnectionToken, getModelToken } from '@nestjs/mongoose';
@@ -22,6 +23,7 @@ describe('RafflesService', () => {
   let notificationsMock: any;
   let queryCacheMock: any;
   let connectionMock: any;
+  let pushMock: any;
 
   beforeEach(async () => {
     const queryMock = {
@@ -32,6 +34,10 @@ describe('RafflesService', () => {
       exec: jest.fn().mockResolvedValue([]),
     };
 
+    pushMock = {
+      isEnabled: jest.fn().mockReturnValue(true),
+      broadcast: jest.fn().mockResolvedValue(3),
+    };
     raffleModelMock = {
       find: jest.fn().mockReturnValue(queryMock),
       findById: jest.fn(),
@@ -106,6 +112,10 @@ describe('RafflesService', () => {
         { provide: getConnectionToken(), useValue: connectionMock },
         { provide: NotificationsService, useValue: notificationsMock },
         { provide: QueryCacheService, useValue: queryCacheMock },
+        {
+          provide: PushService,
+          useValue: pushMock,
+        },
         {
           provide: WinnerClaimService,
           useValue: { issue: jest.fn().mockResolvedValue(undefined) },
@@ -444,6 +454,60 @@ describe('RafflesService', () => {
         verifiableDraws: 4,
         prizesValueXaf: 2100000,
         currency: 'XAF',
+      });
+    });
+
+    describe('new raffle push', () => {
+      const chain = (value: unknown) => {
+        const c: any = {
+          select: () => c,
+          populate: () => c,
+          limit: () => c,
+          lean: () => c,
+          exec: () => Promise.resolve(value),
+        };
+        return c;
+      };
+      // 10h a Douala (UTC+1) = 09:00 UTC ; 23h a Douala = 22:00 UTC.
+      const day = new Date('2026-11-21T09:00:00Z');
+      const night = new Date('2026-11-21T22:00:00Z');
+      const raffle = (id: string, title: string) => ({ _id: id, productId: { title } });
+
+      it('announces one new raffle with a link to it', async () => {
+        raffleModelMock.find = jest.fn().mockReturnValue(chain([raffle('6b0175b81204abaf11fe6ad0', 'PS5')]));
+        raffleModelMock.updateMany = jest.fn().mockReturnValue(chain({ modifiedCount: 1 }));
+        await service.announceNewRaffles(day);
+        expect(pushMock.broadcast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: '🎟️ Nouvelle tombola !',
+            deepLink: '/tabs/raffle-details/6b0175b81204abaf11fe6ad0',
+          }),
+          'NEW_RAFFLE',
+        );
+      });
+
+      it('groups several raffles published together into ONE push', async () => {
+        raffleModelMock.find = jest.fn().mockReturnValue(
+          chain([raffle('a'.repeat(24), 'PS5'), raffle('b'.repeat(24), 'TV'), raffle('c'.repeat(24), 'Moto')]),
+        );
+        raffleModelMock.updateMany = jest.fn().mockReturnValue(chain({ modifiedCount: 3 }));
+        await service.announceNewRaffles(day);
+        expect(pushMock.broadcast).toHaveBeenCalledTimes(1);
+        expect(pushMock.broadcast.mock.calls[0][0].title).toBe('🎟️ 3 nouvelles tombolas !');
+      });
+
+      it('waits for the morning instead of waking players up at night', async () => {
+        raffleModelMock.find = jest.fn();
+        await expect(service.announceNewRaffles(night)).resolves.toBe(0);
+        expect(raffleModelMock.find).not.toHaveBeenCalled();
+        expect(pushMock.broadcast).not.toHaveBeenCalled();
+      });
+
+      it('never announces the same raffle twice (already claimed)', async () => {
+        raffleModelMock.find = jest.fn().mockReturnValue(chain([raffle('a'.repeat(24), 'PS5')]));
+        raffleModelMock.updateMany = jest.fn().mockReturnValue(chain({ modifiedCount: 0 }));
+        await expect(service.announceNewRaffles(day)).resolves.toBe(0);
+        expect(pushMock.broadcast).not.toHaveBeenCalled();
       });
     });
 

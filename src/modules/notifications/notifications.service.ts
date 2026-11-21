@@ -2,13 +2,66 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Notification, NotificationType } from './schemas/notification.schema';
+import { PushService, type PushCategory } from './push.service';
+
+/**
+ * Quelles notifications de l'app partent AUSSI en push sur le telephone.
+ * Volontairement selectif: trop de push = l'app est desinstallee.
+ */
+export function pushCategoryFor(
+  type: NotificationType,
+  data?: Record<string, any>,
+): PushCategory | null {
+  switch (type) {
+    case 'WINNER_ANNOUNCED':
+    case 'PAYMENT_SUCCESS':
+    case 'PAYMENT_FAILED':
+    case 'FREE_TICKET_AVAILABLE':
+      return 'TRANSACTIONAL';
+    case 'DRAW_RESULT':
+      return 'REMINDER';
+    case 'ENDING_SOON':
+      // Un seul rappel par tombola: "plus que 10 minutes".
+      return Number(data?.windowMin) === 10 ? 'REMINDER' : null;
+    default:
+      // DRAW_STARTED (suivi du resultat quelques secondes plus tard),
+      // FREE_TICKET_USED (action du joueur lui-meme), RAFFLE_CREATED (diffuse
+      // a part, a tous les joueurs).
+      return null;
+  }
+}
 
 @Injectable()
 export class NotificationsService {
   constructor(
     @InjectModel(Notification.name)
     private readonly notifModel: Model<Notification>,
+    private readonly push: PushService,
   ) {}
+
+  private pushIfRelevant(input: {
+    userId: string;
+    type: NotificationType;
+    title: string;
+    body: string;
+    data?: Record<string, any>;
+  }): void {
+    const category = pushCategoryFor(input.type, input.data);
+    if (!category) return;
+    this.push.notifyUser(
+      String(input.userId),
+      {
+        title: input.title,
+        body: input.body,
+        deepLink:
+          typeof input.data?.deepLink === 'string' ? input.data.deepLink : undefined,
+        raffleId:
+          typeof input.data?.raffleId === 'string' ? input.data.raffleId : undefined,
+        type: input.type,
+      },
+      category,
+    );
+  }
 
   async create(input: {
     userId: string;
@@ -17,7 +70,7 @@ export class NotificationsService {
     body: string;
     data?: Record<string, any>;
   }) {
-    return this.notifModel.create({
+    const created = await this.notifModel.create({
       userId: input.userId,
       type: input.type,
       title: input.title,
@@ -25,6 +78,8 @@ export class NotificationsService {
       data: input.data ?? {},
       readAt: null,
     });
+    this.pushIfRelevant(input);
+    return created;
   }
 
   async createOnce(input: {
@@ -49,7 +104,7 @@ export class NotificationsService {
     // Upsert atomique (au lieu de findOne puis create): elimine la race qui
     // creait des doublons quand cron multi-instance ou webhooks concurrents.
     try {
-      return await this.notifModel
+      const result: any = await this.notifModel
         .findOneAndUpdate(
           q,
           {
@@ -62,9 +117,20 @@ export class NotificationsService {
               readAt: null,
             },
           },
-          { upsert: true, new: true, setDefaultsOnInsert: true },
+          {
+            upsert: true,
+            new: true,
+            setDefaultsOnInsert: true,
+            includeResultMetadata: true,
+          },
         )
         .exec();
+      // Push uniquement a la 1re creation: les doublons (cron rejoue,
+      // webhooks concurrents) ne re-sonnent pas le telephone.
+      if (result?.lastErrorObject?.updatedExisting === false) {
+        this.pushIfRelevant(input);
+      }
+      return result?.value ?? result;
     } catch (error: any) {
       if (Number(error?.code ?? 0) === 11000) {
         // Un concurrent a insere la meme notification: idempotent.

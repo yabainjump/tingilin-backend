@@ -92,6 +92,14 @@ export function runtimeConfigWarnings(config: ConfigService): string[] {
       'WINNER_CLAIM_SECRET absent: les codes de retrait des gagnants sont derives de JWT_REFRESH_SECRET (changer ce dernier invaliderait les codes non utilises).',
     );
   }
+  const hasFirebase =
+    String(config.get<string>('FIREBASE_SERVICE_ACCOUNT_FILE', '')).trim() ||
+    String(config.get<string>('FIREBASE_SERVICE_ACCOUNT_BASE64', '')).trim();
+  if (isProd && !hasFirebase) {
+    warnings.push(
+      'FIREBASE_SERVICE_ACCOUNT_FILE absent: aucune notification push ne partira (les notifications restent visibles dans l app).',
+    );
+  }
   return warnings;
 }
 

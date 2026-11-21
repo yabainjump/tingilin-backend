@@ -119,6 +119,10 @@ export class UsersService {
       adultConfirmed: Boolean(user.adultConfirmedAt),
       emailVerified: Boolean(user.emailVerifiedAt),
       showInLiveFeed: user.showInLiveFeed !== false,
+      pushPrefs: {
+        reminders: user.pushPrefs?.reminders !== false,
+        newRaffles: user.pushPrefs?.newRaffles !== false,
+      },
     };
   }
 
@@ -183,6 +187,12 @@ export class UsersService {
     if (dto.region !== undefined) $set.region = dto.region;
     if (dto.showInLiveFeed !== undefined) {
       $set.showInLiveFeed = dto.showInLiveFeed === true;
+    }
+    if (dto.pushReminders !== undefined) {
+      $set['pushPrefs.reminders'] = dto.pushReminders === true;
+    }
+    if (dto.pushNewRaffles !== undefined) {
+      $set['pushPrefs.newRaffles'] = dto.pushNewRaffles === true;
     }
 
     const updated = await this.userModel

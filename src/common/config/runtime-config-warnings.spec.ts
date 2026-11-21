@@ -17,6 +17,7 @@ describe('runtime config warnings', () => {
     const w = runtimeConfigWarnings(cfg({ ...base, NODE_ENV: 'production' }));
     expect(w.join(' ')).toContain('PUBLIC_APP_URL');
     expect(w.join(' ')).toContain('WINNER_CLAIM_SECRET');
+    expect(w.join(' ')).toContain('FIREBASE_SERVICE_ACCOUNT_FILE');
   });
 
   it('is quiet when production is fully configured', () => {
@@ -27,6 +28,7 @@ describe('runtime config warnings', () => {
           NODE_ENV: 'production',
           PUBLIC_APP_URL: 'https://tinguilin.yaba-in.com',
           WINNER_CLAIM_SECRET: 'Wc3nT8pQ1xL6vR9kZ2mB5hJ7sD4gF0aY',
+          FIREBASE_SERVICE_ACCOUNT_FILE: '/home/yabain/secrets/firebase.json',
         }),
       ),
     ).toEqual([]);

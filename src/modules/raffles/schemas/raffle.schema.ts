@@ -106,6 +106,10 @@ export class Raffle {
   @Prop({ default: '' })
   badge: string;
 
+  // Push "nouvelle tombola" deja diffuse (une seule fois par tombola).
+  @Prop({ type: Date, default: null })
+  newRaffleAnnouncedAt?: Date | null;
+
   @Prop({ type: Number, default: 0, select: false })
   internalItemCost?: number;
 

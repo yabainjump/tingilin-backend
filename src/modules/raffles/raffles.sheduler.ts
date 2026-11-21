@@ -100,6 +100,13 @@ export class RafflesScheduler {
     this.running = true;
     try {
       await this.rafflesService.notifyEndingSoonMilestones();
+      await this.rafflesService
+        .announceNewRaffles()
+        .catch((error: unknown) =>
+          this.logger.warn(
+            `New raffle push skipped: ${error instanceof Error ? error.message : 'unknown error'}`,
+          ),
+        );
       await this.rafflesService.autoCloseAndDrawExpired();
     } catch (error) {
       if (this.isTransientMongoError(error)) {

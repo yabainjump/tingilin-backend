@@ -34,4 +34,12 @@ export class UpdateMeDto {
   @IsOptional()
   @IsBoolean()
   showInLiveFeed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  pushReminders?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  pushNewRaffles?: boolean;
 }

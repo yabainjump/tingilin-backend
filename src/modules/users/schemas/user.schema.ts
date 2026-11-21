@@ -132,6 +132,18 @@ export class User {
   @Prop({ type: Boolean, default: true })
   showInLiveFeed!: boolean;
 
+  // Notifications push desactivables par le joueur (gains et paiements
+  // restent toujours envoyes).
+  @Prop({
+    type: {
+      reminders: { type: Boolean, default: true },
+      newRaffles: { type: Boolean, default: true },
+    },
+    default: () => ({ reminders: true, newRaffles: true }),
+    _id: false,
+  })
+  pushPrefs?: { reminders: boolean; newRaffles: boolean };
+
   // Limite de depense choisie par le joueur (fenetre glissante).
   @Prop({
     type: {

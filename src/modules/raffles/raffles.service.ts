@@ -35,6 +35,7 @@ import { storeOptimizedImageFromDataUrl } from '../../common/uploads/image-stora
 import { normalizeRegion } from '../../common/regions';
 import { QueryCacheService } from '../../common/cache/query-cache.service';
 import { WinnerClaimService } from './winner-claim.service';
+import { PushService } from '../notifications/push.service';
 import {
   PROVABLY_FAIR_ALGORITHM,
   PROVABLY_FAIR_FORMULA,
@@ -72,6 +73,7 @@ export class RafflesService {
     private readonly notifications: NotificationsService,
     private readonly queryCache: QueryCacheService,
     private readonly winnerClaim: WinnerClaimService,
+    private readonly push: PushService,
   ) {}
 
   private ensureObjectId(id: string, msg = 'Invalid id'): void {
@@ -230,7 +232,9 @@ export class RafflesService {
       const remainingMin = Math.ceil((endAt - now) / 60_000);
       if (remainingMin <= 0) continue;
 
-      const windowMin = remainingMin <= 5 ? 5 : remainingMin <= 15 ? 15 : 60;
+      // 2 rappels par tombola (1 h et 10 min avant); seul celui de 10 min part
+      // aussi en push (voir pushCategoryFor).
+      const windowMin = remainingMin <= 10 ? 10 : 60;
 
       const raffleId = String(raffle?._id ?? '').trim();
       if (!raffleId) continue;
@@ -243,8 +247,14 @@ export class RafflesService {
         this.notifications.createOnce({
           userId,
           type: 'ENDING_SOON',
-          title: 'Le tirage se termine bientôt ⏳',
-          body: `"${title}" se termine dans environ ${windowMin} minute(s).`,
+          title:
+            windowMin === 10
+              ? '⏳ Plus que 10 minutes !'
+              : 'Le tirage se termine bientôt ⏳',
+          body:
+            windowMin === 10
+              ? `Le tirage de "${title}" a lieu dans 10 minutes. Dernière chance pour prendre un ticket !`
+              : `"${title}" se termine dans environ 1 heure.`,
           dedupeKey: `ending-soon:${raffleId}:${windowMin}`,
           data: {
             raffleId,
@@ -1908,6 +1918,61 @@ export class RafflesService {
     }
 
     return { ok: true, status: doc.status, winner: doc.winner };
+  }
+
+  /**
+   * Push "Nouvelle tombola" a tous les joueurs qui l'acceptent. Appele chaque
+   * minute par le planificateur:
+   * - une seule fois par tombola (newRaffleAnnouncedAt pose AVANT l'envoi);
+   * - jamais la nuit (21h-7h, heure du Cameroun): l'annonce attend le matin;
+   * - plusieurs tombolas publiees ensemble = UN seul push.
+   */
+  async announceNewRaffles(now = new Date()): Promise<number> {
+    if (!this.push.isEnabled()) return 0;
+    const doualaHour = (now.getUTCHours() + 1) % 24;
+    if (doualaHour >= 21 || doualaHour < 7) return 0;
+
+    const pending: any[] = await this.raffleModel
+      .find({
+        status: RaffleStatus.LIVE,
+        newRaffleAnnouncedAt: null,
+        startAt: { $lte: now, $gte: new Date(now.getTime() - 24 * 3_600_000) },
+        endAt: { $gt: new Date(now.getTime() + 30 * 60_000) },
+      })
+      .select('_id productId')
+      .populate({ path: 'productId', select: 'title' })
+      .limit(20)
+      .lean()
+      .exec();
+    if (!pending.length) return 0;
+
+    const ids = pending.map((r) => r._id);
+    const claimed = await this.raffleModel
+      .updateMany(
+        { _id: { $in: ids }, newRaffleAnnouncedAt: null },
+        { $set: { newRaffleAnnouncedAt: now } },
+      )
+      .exec();
+    if (Number(claimed.modifiedCount ?? 0) === 0) return 0;
+
+    const first = pending[0];
+    const firstTitle = String(first?.productId?.title ?? '').trim() || 'un nouveau lot';
+    const payload =
+      pending.length === 1
+        ? {
+            title: '🎟️ Nouvelle tombola !',
+            body: `${firstTitle} est en jeu. Prends ton ticket avant tout le monde.`,
+            deepLink: `/tabs/raffle-details/${String(first._id)}`,
+            raffleId: String(first._id),
+            type: 'RAFFLE_CREATED',
+          }
+        : {
+            title: `🎟️ ${pending.length} nouvelles tombolas !`,
+            body: `${firstTitle} et ${pending.length - 1} autre(s) lot(s) sont en jeu.`,
+            deepLink: '/tabs/home',
+            type: 'RAFFLE_CREATED',
+          };
+    return this.push.broadcast(payload, 'NEW_RAFFLE');
   }
 
   // ✅ Auto-close + auto-draw (appelé par cron)
